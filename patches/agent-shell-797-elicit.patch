@@ -1,0 +1,3622 @@
+From b3c7dfcd193d6a05ef62db00a6b3906c8a466e4e Mon Sep 17 00:00:00 2001
+From: Oleksii Sadovyi <lex.sadovyi@gmail.com>
+Date: Sat, 22 Aug 2026 07:56:22 +0200
+Subject: [PATCH 1/4] Let action hints name their own command and keymap
+
+`agent-shell-ui--echo-action-hint' hardcoded `agent-shell-ui-toggle-fragment'
+and `agent-shell-ui-fragment-map', so it could only ever describe folding.
+Chrome bound to a different shared map wants the same "Press KEY to VERB"
+hint pointing at its own binding.
+
+Both arguments are optional and default to what was hardcoded, so existing
+callers are unchanged.
+---
+ agent-shell-ui.el             | 14 ++++++++------
+ tests/agent-shell-ui-tests.el | 14 ++++++++++++++
+ 2 files changed, 22 insertions(+), 6 deletions(-)
+
+diff --git a/agent-shell-ui.el b/agent-shell-ui.el
+index 6f59c0b4..385d6cd6 100644
+--- a/agent-shell-ui.el
++++ b/agent-shell-ui.el
+@@ -76,20 +76,22 @@ For example, to fold with TAB as well as RET:
+ Rebind with `define-key' rather than `setq': already rendered text
+ holds on to this keymap object.")
+ 
+-(defun agent-shell-ui--echo-action-hint (verb)
++(defun agent-shell-ui--echo-action-hint (verb &optional command keymap)
+   "Echo how to run an action described by VERB.
+ 
+-Searches `agent-shell-ui-fragment-map' for whichever key runs
+-`agent-shell-ui-toggle-fragment', skipping mouse bindings so the hint
+-names something the user can press.
++Searches KEYMAP for whichever key runs COMMAND, skipping mouse bindings
++so the hint names something the user can press.  COMMAND defaults to
++`agent-shell-ui-toggle-fragment' and KEYMAP to
++`agent-shell-ui-fragment-map', which is the fold chrome; other chrome
++bound to its own shared map passes both.
+ 
+ For example, VERB \"toggle\" echoes \"Press RET to toggle\" with the
+ default bindings, or \"Press TAB to toggle\" once that map binds TAB."
+   (when-let* ((keys (seq-remove
+                      (lambda (key) (mouse-event-p (aref key 0)))
+                      (where-is-internal
+-                      #'agent-shell-ui-toggle-fragment
+-                      (list agent-shell-ui-fragment-map)))))
++                      (or command #'agent-shell-ui-toggle-fragment)
++                      (list (or keymap agent-shell-ui-fragment-map))))))
+     (message "Press %s to %s" (key-description (seq-first keys)) verb)))
+ 
+ (defun agent-shell-ui--fragment-help-echo (qualified-id)
+diff --git a/tests/agent-shell-ui-tests.el b/tests/agent-shell-ui-tests.el
+index 572bda84..fd3d43cc 100644
+--- a/tests/agent-shell-ui-tests.el
++++ b/tests/agent-shell-ui-tests.el
+@@ -977,6 +977,20 @@ it lying.  Mouse bindings are skipped so the hint stays pressable."
+       (agent-shell-ui--echo-action-hint "toggle")
+       (should (equal "Press TAB to toggle" echoed)))))
+ 
++(ert-deftest agent-shell-ui-action-hint-names-the-supplied-keymap-test ()
++  "The hint describes the command and keymap it was handed.
++
++Chrome bound to its own shared map needs the same \"Press KEY to VERB\"
++hint pointing at its own binding, rather than at whichever key folds a
++fragment."
++  (let ((map (make-sparse-keymap))
++        (echoed nil))
++    (define-key map (kbd "C-c C-e") #'ignore)
++    (cl-letf (((symbol-function 'message)
++               (lambda (fmt &rest args) (setq echoed (apply #'format fmt args)))))
++      (agent-shell-ui--echo-action-hint "act on this" #'ignore map)
++      (should (equal "Press C-c C-e to act on this" echoed)))))
++
+ (ert-deftest agent-shell-ui-keys-reach-fragment-chrome-only-test ()
+   "The fold keys sit on the chrome, leaving the rest of the buffer alone.
+ 
+
+From f3ad3f72da98492b117dba8610b5f7fe1f55e678 Mon Sep 17 00:00:00 2001
+From: Oleksii Sadovyi <lex.sadovyi@gmail.com>
+Date: Sat, 22 Aug 2026 13:18:33 +0200
+Subject: [PATCH 2/4] Render ACP elicitation forms #792
+
+Agents can ask a structured question mid-turn and wait for the answer.
+agent-shell did not implement `elicitation/create', and because the
+capability is opt-in per client, agents cannot tell it is merely absent:
+the Claude adapter drops `AskUserQuestion' from the model's toolset
+entirely, and auto-declines elicitations coming from MCP servers.
+
+Advertising `elicitation.form' is a promise to render any form the schema
+permits, so every `ElicitationPropertySchema' variant is covered: single-
+and multi-select in both spellings, boolean, string, number, integer, and
+the forward-compat unknown type.  What is deferred is constraint
+validation, not coverage -- only a required-presence gate runs on submit,
+without which we would send a response the schema forbids.  `url' mode is
+a separate capability and is deliberately not advertised: an agent must
+not send a mode the client did not ask for.
+
+Form state lives in `agent-shell--state' under `:elicitations', keyed by
+the JSON-RPC request id.  Rendered text carries identity only, read back
+by named commands at point.  Fragment-local state would not do, since
+`agent-shell--update-fragment' writes into both the shell buffer and the
+viewport buffer, so a fragment's own state exists in two copies.
+
+Agents bridging an ask-the-user tool onto elicitation send a select plus a
+free-text "Other" field, marking the second as belonging to the first
+through an un-namespaced `_meta' key.  Rendered as two independent fields,
+one question reads as two and can be answered twice in contradictory ways,
+so the companion folds into its select as one more option.  For a
+single-select the two replace one another.  For a multi-select they
+combine into one string, because those agents read the companion first
+and return early: a response carrying both silently loses the ticks.
+
+Such a bridge calls the tool with the questions as its input, which
+agent-shell renders as a JSON dump for want of anything better, beside a
+form saying the same thing.  A tool call carrying a questionnaire is now
+recognised from that input: it reads as a question rather than the
+catch-all "other" kind, says nothing while its form is open, and once
+answered is left to speak for itself -- its own content already spells
+the answers out in prose.  The form is removed at that point, so an
+answer reads the same whether it was just given or replayed from a
+restored session, which never brings the form back.  An elicitation with
+no such tool call behind it, from an MCP server or scoped to a request,
+keeps its settled form as the only record of what was asked.
+
+Input is corrected rather than coerced: text that does not parse comes
+back prefilled for editing, and an integer field refuses a fraction
+rather than answering 1.9 with 1.  A pending form arms the same idle
+timer an unanswered permission does, so subscribers hear about a question
+left unattended.
+---
+ README.org                             |    8 +
+ agent-shell-elicitation.el             | 1436 ++++++++++++++++++++++++
+ agent-shell-viewport.el                |    8 +
+ agent-shell.el                         |   85 +-
+ tests/agent-shell-elicitation-tests.el |  987 ++++++++++++++++
+ tests/claude-ask-user-question.traffic |  144 +++
+ 6 files changed, 2657 insertions(+), 11 deletions(-)
+ create mode 100644 agent-shell-elicitation.el
+ create mode 100644 tests/agent-shell-elicitation-tests.el
+ create mode 100644 tests/claude-ask-user-question.traffic
+
+diff --git a/README.org b/README.org
+index 8a37a03f..91e5a7ad 100644
+--- a/README.org
++++ b/README.org
+@@ -923,6 +923,14 @@ All of the above settings can be applied on a per-project basis using [[https://
+ - =C-c C-c= - Interrupt current agent operation
+ - =TAB and Shift-TAB= - Navigate interactive elements
+ 
++  When an agent asks a question, its form renders in the buffer and =TAB=
++  stops on each option, field and button:
++
++  - =RET= - Pick the option, toggle the checkbox, edit the field, or press
++    the button at point.
++  - =C-c C-c= - Interrupt, cancelling any question still waiting for an
++    answer.
++
+   To customize =RET= binding behaviour, you can use something like:
+ 
+   #+begin_src emacs-lisp :lexical no
+diff --git a/agent-shell-elicitation.el b/agent-shell-elicitation.el
+new file mode 100644
+index 00000000..8e4e57b3
+--- /dev/null
++++ b/agent-shell-elicitation.el
+@@ -0,0 +1,1436 @@
++;;; agent-shell-elicitation.el --- ACP elicitation forms -*- lexical-binding: t; -*-
++
++;; Copyright (C) 2024 Alvaro Ramirez
++
++;; Author: Alvaro Ramirez https://xenodium.com
++;; URL: https://github.com/xenodium/agent-shell
++
++;; This package is free software; you can redistribute it and/or modify
++;; it under the terms of the GNU General Public License as published by
++;; the Free Software Foundation; either version 3, or (at your option)
++;; any later version.
++
++;; This package is distributed in the hope that it will be useful,
++;; but WITHOUT ANY WARRANTY; without even the implied warranty of
++;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++;; GNU General Public License for more details.
++
++;; You should have received a copy of the GNU General Public License
++;; along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
++
++;;; Commentary:
++;;
++;; Report issues at https://github.com/xenodium/agent-shell/issues
++;;
++;; Renders `elicitation/create' requests as an in-buffer form.
++;;
++;; An agent uses an elicitation to ask a structured question mid-turn
++;; and wait for the answer.  Support is opt-in per client: an agent
++;; cannot tell an unimplemented elicitation from a declined one, so it
++;; adapts by not asking at all.  The Claude adapter drops its
++;; `AskUserQuestion' tool from the model's toolset when the client stays
++;; silent, and auto-declines elicitations coming from MCP servers.
++;;
++;; Advertising `elicitation.form' is therefore a promise to render any
++;; form the schema permits, so every `ElicitationPropertySchema' variant
++;; is covered here.  What is not covered is constraint validation
++;; (`minLength', `pattern', `minimum', `minItems' and friends): only a
++;; required-presence gate runs on submit, since without it we would send
++;; a response the schema forbids.  An agent that cares about the rest
++;; rejects the answer and asks again.
++;;
++;; URL mode (`elicitation.url') is a separate capability and is
++;; deliberately not advertised: agents must not send a mode the client
++;; did not ask for, so an agent will not send it.
++;;
++;; Form state lives in `agent-shell--state' under `:elicitations', keyed
++;; by the JSON-RPC request id -- the only identifier every elicitation
++;; carries.  Rendered text holds identity only (which elicitation, which
++;; field, which option); the named commands below read those properties
++;; at point and look the authoritative entry up.  Fragment-local text
++;; properties would not do: `agent-shell--update-fragment' writes into
++;; both the shell buffer and the viewport buffer, so a fragment's own
++;; state exists in two copies, which for field values is a correctness
++;; bug rather than the harmless divergence it is for fold state.
++;;
++;; See https://github.com/xenodium/agent-shell/issues/792
++
++;;; Code:
++
++(require 'agent-shell-faces)
++(require 'agent-shell-ui)
++(require 'map)
++(require 'seq)
++(require 'text-property-search)
++(eval-when-compile
++  (require 'cl-lib))
++
++(declare-function acp-make-error "acp")
++(declare-function acp-send-response "acp")
++(declare-function agent-shell--append-transcript "agent-shell")
++(declare-function agent-shell--cancel-idle-timer "agent-shell")
++(declare-function agent-shell--start-idle-timer "agent-shell")
++(declare-function agent-shell--active-requests-p "agent-shell")
++(declare-function agent-shell--delete-fragment "agent-shell")
++(declare-function agent-shell--emit-event "agent-shell")
++(declare-function agent-shell--state "agent-shell")
++(declare-function agent-shell--update-fragment "agent-shell")
++(declare-function agent-shell-interrupt "agent-shell")
++(declare-function agent-shell-viewport--buffer "agent-shell-viewport")
++(declare-function agent-shell-viewport--shell-buffer "agent-shell-viewport")
++
++(defvar agent-shell--transcript-file)
++
++(defun agent-shell-elicitation--questionnaire-p (raw-input)
++  "Return non-nil when RAW-INPUT is an ask-the-user questionnaire.
++
++Agents bridging an ask-the-user tool onto elicitation call it with the
++questions as its input, so the tool call carries the whole questionnaire
++and its `content\=' later carries the answers.  Recognising that shape is
++what lets such a call render as prose rather than as a JSON dump, live
++and on a restored session alike -- restore replays notifications but
++never requests, so the form itself never comes back and the tool call is
++all there is.
++
++Read from the input rather than from a mark left when the form was
++raised, since nothing marks it on restore.
++
++For example:
++
++  (agent-shell-elicitation--questionnaire-p
++   \='((questions . [((question . \"Which colour?\"))])))
++  => t"
++  (when-let* ((questions (map-elt raw-input 'questions))
++              ((not (seq-empty-p questions))))
++    (seq-every-p (lambda (question) (map-elt question 'question)) questions)))
++
++(cl-defun agent-shell-elicitation--pending-for-tool-call-p (&key state tool-call-id)
++  "Return non-nil when a form raised for TOOL-CALL-ID in STATE awaits an answer.
++
++While it does, that tool call renders no body of its own: the form is
++showing the same questions interactively just below it."
++  (when tool-call-id
++    (seq-find (lambda (entry)
++                (and (eq (map-elt (cdr entry) :status) 'pending)
++                     (equal (map-elt (cdr entry) :tool-call-id) tool-call-id)))
++              (map-elt state :elicitations))))
++
++(defconst agent-shell-elicitation--advertised-modes '("form")
++  "Elicitation modes this client advertises in `initialize'.
++
++An agent must not send a mode we did not advertise, so anything else
++is answered with an invalid-params error rather than rendered.")
++
++
++(defun agent-shell-elicitation--assoc-put (alist key value)
++  "Return ALIST with KEY bound to VALUE, replacing any existing binding.
++
++`map-insert' would prepend a second binding rather than replace the
++first, so an alist edited once per interaction would grow an entry per
++keystroke while `map-elt' quietly read the newest.
++
++For example:
++
++  (agent-shell-elicitation--assoc-put \='((a . 1) (b . 2)) \='a 3)
++  => ((a . 3) (b . 2))"
++  (cons (cons key value) (map-delete (copy-alist alist) key)))
++
++;;; Schema parsing
++
++(defun agent-shell-elicitation--enum-options (values)
++  "Normalize VALUES, an untitled enum, into option alists.
++
++VALUES arrives as a JSON array, so a vector.  Each option becomes:
++
++  ((:value . \"red\") (:title . \"red\") (:description . nil))
++
++For example:
++
++  (agent-shell-elicitation--enum-options [\"red\" \"blue\"])
++  => (((:value . \"red\") (:title . \"red\") (:description . nil))
++      ((:value . \"blue\") (:title . \"blue\") (:description . nil)))"
++  (seq-map (lambda (value)
++             (list (cons :value value)
++                   (cons :title value)
++                   (cons :description nil)))
++           (append values nil)))
++
++(defun agent-shell-elicitation--titled-options (options)
++  "Normalize OPTIONS, a sequence of ACP `EnumOption', into option alists.
++
++Each `EnumOption' carries a `const' value, a human-readable `title' and
++an optional `description'.
++
++For example:
++
++  (agent-shell-elicitation--titled-options
++   [((const . \"a\") (title . \"Approach A\") (description . \"Safer\"))])
++  => (((:value . \"a\") (:title . \"Approach A\") (:description . \"Safer\")))"
++  (seq-map (lambda (option)
++             (list (cons :value (map-elt option 'const))
++                   (cons :title (or (map-elt option 'title)
++                                    (map-elt option 'const)))
++                   (cons :description (map-elt option 'description))))
++           (append options nil)))
++
++(defun agent-shell-elicitation--field-options (schema)
++  "Return SCHEMA's selectable options, or nil when it has none.
++
++Both spellings of each enum shape are folded into one option list:
++`oneOf' and `enum' for a single-select string, `items.anyOf' and
++`items.enum' for a multi-select array."
++  (cond ((map-elt schema 'oneOf)
++         (agent-shell-elicitation--titled-options (map-elt schema 'oneOf)))
++        ((map-elt schema 'enum)
++         (agent-shell-elicitation--enum-options (map-elt schema 'enum)))
++        ((map-nested-elt schema '(items anyOf))
++         (agent-shell-elicitation--titled-options (map-nested-elt schema '(items anyOf))))
++        ((map-nested-elt schema '(items enum))
++         (agent-shell-elicitation--enum-options (map-nested-elt schema '(items enum))))))
++
++(defun agent-shell-elicitation--field-type (schema)
++  "Return SCHEMA's field type as a symbol.
++
++One of `single-select', `multi-select', `boolean', `string', `number',
++`integer', or `unsupported' for the schema's forward-compatibility
++variant, whose `type' this client has no way to render.
++
++A string is a single-select only once it offers options, so the two
++share a `type' and are told apart by that:
++
++  (agent-shell-elicitation--field-type \='((type . \"string\")))
++  => string
++
++  (agent-shell-elicitation--field-type
++   \='((type . \"string\") (enum . [\"a\"])))
++  => single-select"
++  (pcase (map-elt schema 'type)
++    ("string" (if (agent-shell-elicitation--field-options schema)
++                  'single-select
++                'string))
++    ("array" 'multi-select)
++    ("boolean" 'boolean)
++    ("number" 'number)
++    ("integer" 'integer)
++    (_ 'unsupported)))
++
++(defun agent-shell-elicitation--field-default (type schema)
++  "Return SCHEMA's initial value for a field of TYPE, or nil when unset.
++
++A multi-select default is a JSON array, so it arrives as a vector and is
++returned as a list.  A boolean `false' default is indistinguishable from
++an absent one, since acp.el parses JSON `false' and `null' alike as nil;
++such a field simply starts unchecked.
++
++For example:
++
++  (agent-shell-elicitation--field-default
++   \='multi-select \='((default . [\"a\" \"b\"])))
++  => (\"a\" \"b\")"
++  (when-let* ((default (map-elt schema 'default)))
++    (pcase type
++      ('multi-select (append default nil))
++      ('boolean t)
++      (_ default))))
++
++(defconst agent-shell-elicitation--custom-answer-meta-key '_askUserQuestionCustomAnswer
++  "`_meta\=' key marking a text field as another field\='s free-text companion.
++
++Agents bridging an ask-the-user tool onto elicitation send a select
++field and a free-text \"Other\" field per question, and mark the second
++as belonging to the first.  The key is deliberately un-namespaced so the
++same marker is recognisable across Claude, Codex and any other bridge.
++
++Unlike agent-namespaced `_meta\=' decoration, acting on this is what makes
++the form readable: rendered as two independent fields, one question
++looks like two, and a user can answer it twice in contradictory ways.")
++
++(defun agent-shell-elicitation--custom-answer-for (schema)
++  "Return the field key SCHEMA declares itself the free-text companion of.
++
++Returns nil for an ordinary field.  See
++`agent-shell-elicitation--custom-answer-meta-key\='."
++  (map-nested-elt schema (list '_meta
++                               agent-shell-elicitation--custom-answer-meta-key
++                               'questionId)))
++
++(defun agent-shell-elicitation--link-custom-answers (fields)
++  "Fold each free-text companion in FIELDS into the select it answers for.
++
++The select gains `:custom-key\=', naming the companion; the companion gains
++`:folded-into\=', naming the select.  The renderer then offers the companion
++as one more option of that select rather than as a field of its own, so
++picking an option and typing an answer are alternatives rather than both
++being answerable at once.
++
++A companion whose named field is missing, or is not a select, is left
++alone and renders as the ordinary text field it is.
++
++For example, given a select `question_0' and a companion naming it:
++
++  => the select gains (:custom-key . \"question_0_custom\")
++     and the companion gains (:folded-into . \"question_0\")"
++  (let ((links (seq-keep
++                (lambda (field)
++                  (when-let* (((eq (map-elt field :type) 'string))
++                              (parent-key (map-elt field :custom-answer-for))
++                              (parent (seq-find (lambda (each)
++                                                  (equal (map-elt each :key) parent-key))
++                                                fields))
++                              ((memq (map-elt parent :type) '(single-select multi-select))))
++                    (cons parent-key (map-elt field :key))))
++                fields)))
++    (seq-map (lambda (field)
++               (cond ((map-elt links (map-elt field :key))
++                      (agent-shell-elicitation--assoc-put
++                       field :custom-key (map-elt links (map-elt field :key))))
++                     ((rassoc (map-elt field :key) links)
++                      (agent-shell-elicitation--assoc-put
++                       field :folded-into (car (rassoc (map-elt field :key) links))))
++                     (t field)))
++             fields)))
++
++(cl-defun agent-shell-elicitation--parse-schema (&key requested-schema)
++  "Return REQUESTED-SCHEMA's fields as an ordered list of descriptors.
++
++REQUESTED-SCHEMA is an ACP `ElicitationSchema': an object schema whose
++`properties' are the form's fields and whose `required' array names the
++ones that must carry a value.  Property order is the order the agent
++sent, which is the order the form renders in.
++
++Each descriptor is an alist:
++
++  ((:key . \"colour\")
++   (:type . single-select)
++   (:raw-type . \"string\")
++   (:title . \"Colour\")
++   (:description . \"Pick one.\")
++   (:required . t)
++   (:options . (((:value . \"red\") (:title . \"Red\") (:description . nil))))
++   (:default . nil)
++   (:custom-answer-for . nil)
++   (:custom-key . nil)
++   (:folded-into . nil))
++
++`:custom-answer-for\=' through `:folded-into\=' carry the free-text
++companion link, see `agent-shell-elicitation--link-custom-answers\='.
++
++For example:
++
++  (agent-shell-elicitation--parse-schema
++   :requested-schema \\='((type . \"object\")
++                       (properties . ((note . ((type . \"string\")))))
++                       (required . [\"note\"])))
++  => (((:key . \"note\") (:type . string) (:raw-type . \"string\")
++       (:title . nil) (:description . nil) (:required . t)
++       (:options . nil) (:default . nil) (:custom-answer-for . nil)
++       (:custom-key . nil) (:folded-into . nil)))"
++  (let ((required (append (map-elt requested-schema 'required) nil)))
++    (agent-shell-elicitation--link-custom-answers
++     (seq-map (lambda (property)
++                (let ((type (agent-shell-elicitation--field-type (cdr property))))
++                  (list (cons :key (symbol-name (car property)))
++                        (cons :type type)
++                        (cons :raw-type (map-elt (cdr property) 'type))
++                        (cons :title (map-elt (cdr property) 'title))
++                        (cons :description (map-elt (cdr property) 'description))
++                        (cons :required (and (member (symbol-name (car property)) required) t))
++                        (cons :options (agent-shell-elicitation--field-options (cdr property)))
++                        (cons :default (agent-shell-elicitation--field-default
++                                        type (cdr property)))
++                        (cons :custom-answer-for
++                              (agent-shell-elicitation--custom-answer-for (cdr property))))))
++              (map-elt requested-schema 'properties)))))
++
++(defun agent-shell-elicitation--initial-values (fields)
++  "Return the starting value alist for FIELDS, seeded from their defaults.
++
++Fields with no default are left out entirely, so an untouched optional
++field is omitted from the response rather than sent as null.
++
++For example:
++
++  (agent-shell-elicitation--initial-values
++   \='(((:key . \"n\") (:default . 3)) ((:key . \"note\") (:default . nil))))
++  => ((\"n\" . 3))"
++  (seq-reduce (lambda (values field)
++                (if-let* ((value (map-elt field :default)))
++                    (cons (cons (map-elt field :key) value) values)
++                  values))
++              fields nil))
++
++
++;;; Response encoding
++
++(defun agent-shell-elicitation--encode-value (type value)
++  "Encode VALUE for a field of TYPE as an ACP `ElicitationContentValue'.
++
++Booleans serialize as t/`:false' rather than t/nil, matching acp.el's
++convention: nil is how it spells JSON null.  Integers are floored so
++`1' never goes out as `1.0'.  A multi-select becomes a vector, since
++`json-serialize' reads a plain list as an alist.
++
++For example:
++
++  (agent-shell-elicitation--encode-value \\='integer 3.0) => 3
++  (agent-shell-elicitation--encode-value \\='boolean nil) => :false
++  (agent-shell-elicitation--encode-value \\='multi-select \\='(\"a\")) => [\"a\"]"
++  (pcase type
++    ('boolean (if (eq value t) t :false))
++    ('integer (truncate value))
++    ('number (float value))
++    ('multi-select (vconcat value))
++    (_ value)))
++
++(defun agent-shell-elicitation--value-present-p (type value)
++  "Return non-nil when VALUE counts as an answer for a field of TYPE.
++
++An empty multi-select is no answer, nor is an empty string.  Booleans
++are not decided here: an unticked checkbox is indistinguishable from an
++absent one, so whether it answers anything depends on the field rather
++than the value -- see `agent-shell-elicitation--checkbox-answers-p'."
++  (pcase type
++    ('multi-select (and value t))
++    ('string (and (stringp value) (not (string-empty-p value))))
++    (_ (and value t))))
++
++(defun agent-shell-elicitation--checkbox-answers-p (field value)
++  "Return non-nil when checkbox FIELD holding VALUE has an answer to send.
++
++An unticked checkbox is indistinguishable on screen from one the user
++never reached, so it is left out rather than reported as `no'.  It does
++answer when ticked, when the schema marked it required (a required
++checkbox has to be answerable `no'), or when a default gave it a
++starting position.
++
++Zed's elicitation form applies the same rule.
++
++One caveat is specific to this client: acp.el decodes JSON `false' and
++`null' alike as nil, so a schema default of `false' is indistinguishable
++from no default at all, and such a checkbox is treated as having none."
++  (or (eq value t)
++      (map-elt field :required)
++      (and (map-elt field :default) t)))
++
++(cl-defun agent-shell-elicitation--field-answer (&key field values)
++  "Return what FIELD answers given VALUES, or nil when it answers nothing.
++
++Resolves a select and its free-text companion into the one answer they
++jointly make, since only one of the two can carry it:
++
++  ((:key . \"question_0_custom\")  ; the field it is sent under
++   (:type . string)                ; how to encode it
++   (:value . \"Red, teal\")         ; what goes on the wire
++   (:display . \"Red, teal\"))      ; what a settled form shows
++
++A typed answer to a single-select replaces the pick, matching how such
++a question reads: one choice, of which \"my own\" is one.
++
++A typed answer to a multi-select joins the ticks instead, because
++ticking boxes and adding one of your own is a single answer.  It has to
++travel as one string: agents bridging their ask-the-user tool onto
++elicitation read the companion first and return early, so a response
++carrying both loses the ticks -- verified against the Claude adapter,
++which reported back only the typed word.  Comma-joined is the shape
++that adapter builds from an array of ticks on its own, so the model
++sees no difference."
++  (let ((type (map-elt field :type))
++        (value (map-elt values (map-elt field :key)))
++        (custom (map-elt values (map-elt field :custom-key))))
++    (cond
++     ((eq type 'unsupported) nil)
++     ((eq type 'boolean)
++      (when (agent-shell-elicitation--checkbox-answers-p field value)
++        (list (cons :key (map-elt field :key))
++              (cons :type 'boolean)
++              (cons :value value)
++              (cons :display (agent-shell-elicitation--render-value field value)))))
++     ((agent-shell-elicitation--value-present-p 'string custom)
++      (let ((answer (if (and (eq type 'multi-select) value)
++                        (string-join (append value (list custom)) ", ")
++                      custom)))
++        (list (cons :key (map-elt field :custom-key))
++              (cons :type 'string)
++              (cons :value answer)
++              (cons :display answer))))
++     ((agent-shell-elicitation--value-present-p type value)
++      (list (cons :key (map-elt field :key))
++            (cons :type type)
++            (cons :value value)
++            (cons :display (agent-shell-elicitation--render-value field value)))))))
++
++(defun agent-shell-elicitation--answerable (fields)
++  "Return FIELDS minus every companion folded into a select.
++A companion contributes through its select, so walking both would count
++one question twice."
++  (seq-remove (lambda (field) (map-elt field :folded-into)) fields))
++
++(cl-defun agent-shell-elicitation--make-content (&key fields values)
++  "Encode VALUES for FIELDS as an elicitation response `content' map.
++
++Fields with no value are omitted rather than sent as null, and so are
++fields whose type this client could not render.  Returns nil when
++nothing was answered, which serializes as an empty JSON object.
++
++A select and its free-text companion contribute one entry between them,
++see `agent-shell-elicitation--field-answer'.
++
++For example:
++
++  (agent-shell-elicitation--make-content
++   :fields \='(((:key . \"n\") (:type . integer)) ((:key . \"m\") (:type . string)))
++   :values \='((\"n\" . 2)))
++  => ((n . 2))"
++  (seq-reduce (lambda (content field)
++                (if-let* ((answer (agent-shell-elicitation--field-answer
++                                   :field field :values values)))
++                    (append content
++                            (list (cons (intern (map-elt answer :key))
++                                        (agent-shell-elicitation--encode-value
++                                         (map-elt answer :type)
++                                         (map-elt answer :value)))))
++                  content))
++              (agent-shell-elicitation--answerable fields) nil))
++
++(cl-defun agent-shell-elicitation--make-response (&key request-id action fields values)
++  "Instantiate an \"elicitation/create\" response.
++
++REQUEST-ID is the id of the incoming request this answers.  ACTION is
++one of `accept', `decline' or `cancel'.  FIELDS and VALUES are only
++read for `accept', to build the response `content'.
++
++For example:
++
++  (agent-shell-elicitation--make-response :request-id 7 :action \\='decline)
++  => ((:request-id . 7) (:result . ((action . \"decline\"))))"
++  (unless request-id
++    (error ":request-id is required"))
++  `((:request-id . ,request-id)
++    (:result . ,(if (eq action 'accept)
++                    `((action . "accept")
++                      (content . ,(agent-shell-elicitation--make-content
++                                   :fields fields :values values)))
++                  `((action . ,(symbol-name action)))))))
++
++
++;;; State
++
++(defun agent-shell-elicitation--ensure-state (state)
++  "Add the keys elicitation needs to STATE when a session predates them.
++Without this, `map-put!' fails on a mid-session package update."
++  (dolist (key '(:elicitations :active-requests))
++    (unless (assq key state)
++      (nconc state (list (cons key nil)))))
++  state)
++
++(cl-defun agent-shell-elicitation--clear (&key state)
++  "Drop STATE's forms at the end of a turn.
++
++A form settles within the turn that raised it -- the agent is blocked
++on the answer until it does -- so nothing here is still awaiting one.
++Settled entries are cleared alongside `:tool-calls' rather than kept:
++the rendered text is already correct and the transcript already has the
++answer, so there is nothing left to look up."
++  (agent-shell-elicitation--ensure-state state)
++  (map-put! state :elicitations nil)
++  (map-put! state :active-requests
++            (seq-remove (lambda (request)
++                          (equal (map-elt request :method) "elicitation/create"))
++                        (map-elt state :active-requests))))
++
++(defun agent-shell-elicitation--field (elicitation key)
++  "Return ELICITATION's field named KEY, or nil when it has none."
++  (seq-find (lambda (field) (equal (map-elt field :key) key))
++            (map-elt elicitation :fields)))
++
++(defun agent-shell-elicitation--get (state id)
++  "Return the elicitation ID's entry in STATE, or nil when it is gone."
++  (map-nested-elt state (list :elicitations id)))
++
++(defun agent-shell-elicitation--put (state id elicitation)
++  "Store ELICITATION under ID in STATE's `:elicitations'."
++  (agent-shell-elicitation--ensure-state state)
++  (map-put! state :elicitations
++            (agent-shell-elicitation--assoc-put
++             (map-elt state :elicitations) id elicitation)))
++
++(cl-defun agent-shell-elicitation--pending-p (&key shell-buffer)
++  "Return non-nil if an elicitation is awaiting an answer.
++When SHELL-BUFFER is non-nil, check that buffer instead of the current one."
++  (with-current-buffer (or shell-buffer (current-buffer))
++    (seq-some (lambda (entry)
++                (eq (map-elt (cdr entry) :status) 'pending))
++              (map-elt (agent-shell--state) :elicitations))))
++
++(defun agent-shell-elicitation--shell-buffer ()
++  "Return the shell buffer backing the current buffer.
++
++A form renders into both the shell buffer and the viewport buffer, but
++only the shell buffer holds the authoritative state, so acting on a
++control resolves back to it either way."
++  (if (derived-mode-p 'agent-shell-viewport-view-mode)
++      (agent-shell-viewport--shell-buffer)
++    (current-buffer)))
++
++
++;;; Rendering
++
++(defvar agent-shell-elicitation-map
++  (let ((map (make-sparse-keymap)))
++    (define-key map (kbd "RET") #'agent-shell-elicitation-act)
++    (define-key map [mouse-1] #'agent-shell-elicitation-act)
++    (define-key map [remap self-insert-command] #'ignore)
++    (define-key map (kbd "C-c C-c") #'agent-shell-elicitation-interrupt)
++    map)
++  "Keymap active on an elicitation form's controls.
++
++Applied as a `keymap' text property by
++`agent-shell-elicitation--make-control', so it reaches the options,
++fields and buttons and nothing else.  Scoping the keys to that text is
++what leaves the rest of the buffer alone: RET still submits the prompt
++and typing still inserts everywhere outside a control.
++
++Typing on a control runs `ignore' rather than erroring, since that text
++is read-only.
++
++Rebind with `define-key' rather than `setq': already rendered forms hold
++on to this keymap object.")
++
++(defconst agent-shell-elicitation--indent "    "
++  "Indentation shared by every line of a rendered form.")
++
++(defconst agent-shell-elicitation--empty-value "(empty)"
++  "Placeholder shown in place of a text field with no value yet.")
++
++(cl-defun agent-shell-elicitation--make-control (&key text id key value action hint)
++  "Return TEXT propertized as an elicitation control.
++
++ID identifies the elicitation, KEY the field within it and VALUE the
++option within that field, so `agent-shell-elicitation-act' can look the
++authoritative entry up rather than close over it.  ACTION names what
++invoking the control does: `select', `toggle', `read', `custom',
++`submit' or `decline'.  HINT is a verb echoed when the cursor enters
++TEXT.
++
++The first character carries `agent-shell-elicitation-navigable', which
++is what TAB stops on, putting point at the start of the control where a
++screen reader reads the whole line from."
++  (let ((control (apply #'agent-shell--add-text-properties
++                        text
++                        (append
++                         (list 'agent-shell-elicitation-control
++                               (list (cons :id id)
++                                     (cons :key key)
++                                     (cons :value value)
++                                     (cons :action action))
++                               'keymap agent-shell-elicitation-map
++                               'pointer 'hand
++                               'rear-nonsticky t)
++                         (when hint
++                           (list 'cursor-sensor-functions
++                                 (list (lambda (_window _old-pos sensor-action)
++                                         (when (eq sensor-action 'entered)
++                                           (agent-shell-ui--echo-action-hint
++                                            hint #'agent-shell-elicitation-act
++                                            agent-shell-elicitation-map))))))))))
++    (put-text-property 0 1 'agent-shell-elicitation-navigable t control)
++    control))
++
++(defun agent-shell-elicitation--box (text)
++  "Return TEXT drawn as a button, matching `agent-shell--make-button'.
++Uses [ ] brackets on displays that cannot draw a box border.
++
++Only the drawing is borrowed, not the helper itself.
++`agent-shell--make-button' binds RET in a fresh keymap per call and
++keeps the shared map as its parent, so a child binding shadows the
++parent and rebinding RET in `agent-shell-elicitation-map' would not
++reach the buttons -- the problem its own TODO records as issue #759.
++Applying that map directly as a `keymap' property instead leaves every
++key in one rebindable place, and this is the only piece of
++`agent-shell--make-button' left to reproduce."
++  (if (display-graphic-p)
++      (agent-shell--add-text-properties (format " %s " text)
++                                        'font-lock-face '(:box t)
++                                        'face '(:box t))
++    (format "[ %s ]" text)))
++
++(defun agent-shell-elicitation--field-heading (field)
++  "Return FIELD's display heading, falling back to its key."
++  (or (map-elt field :title) (map-elt field :key)))
++
++(defun agent-shell-elicitation--option-title (field value)
++  "Return the title FIELD gives VALUE, or VALUE itself when it has none.
++
++An option's `const' is what travels on the wire, but its `title' is what
++the user picked by name, so that is what a settled form reads back."
++  (or (map-elt (seq-find (lambda (option)
++                           (equal (map-elt option :value) value))
++                         (map-elt field :options))
++               :title)
++      value))
++
++(defun agent-shell-elicitation--render-value (field value)
++  "Return VALUE for FIELD as the text of a settled form.
++
++Selected options read back by title rather than by the `const' sent on
++the wire, a multi-select renders its picks comma-joined, and a boolean
++renders as yes or no.
++
++For example, a single-select holding \"a\" whose option is titled
++\"Approach A\" renders as \"Approach A\"."
++  (pcase (map-elt field :type)
++    ('single-select (agent-shell-elicitation--option-title field value))
++    ('multi-select (string-join
++                    (seq-map (lambda (each)
++                               (agent-shell-elicitation--option-title field each))
++                             value)
++                    ", "))
++    ('boolean (if (eq value t) "yes" "no"))
++    (_ (format "%s" value))))
++
++(defun agent-shell-elicitation--marker (multi selected)
++  "Return the marker for an option, given MULTI and whether it is SELECTED.
++Checkboxes for a multi-select, radio buttons otherwise."
++  (cond ((and multi selected) "[x]")
++        (multi "[ ]")
++        (selected "(*)")
++        (t "( )")))
++
++(cl-defun agent-shell-elicitation--make-option-line (&key id field value title description
++                                                         action multi selected)
++  "Return one marked option line of FIELD in elicitation ID.
++
++TITLE and DESCRIPTION label it, VALUE identifies which option it is (nil
++for the free-text companion, which has no option value of its own),
++ACTION is what invoking it does, and MULTI and SELECTED pick the marker."
++  (concat
++   agent-shell-elicitation--indent
++   (agent-shell-elicitation--make-control
++    :text (format "%s %s" (agent-shell-elicitation--marker multi selected) title)
++    :id id
++    :key (map-elt field :key)
++    :value value
++    :action action
++    :hint (pcase action
++            ('custom "type your own answer")
++            ('toggle "toggle this option")
++            (_ "pick this option")))
++   (when description
++     (format "\n%s    %s" agent-shell-elicitation--indent description))))
++
++(cl-defun agent-shell-elicitation--make-select-lines (&key id field value multi custom custom-value)
++  "Return FIELD's option lines for elicitation ID given its current VALUE.
++
++With MULTI, options are checkboxes toggled independently and VALUE is a
++list; otherwise they are radio buttons and VALUE is the single pick.
++
++CUSTOM is FIELD's free-text companion, when it has one, and CUSTOM-VALUE
++whatever has been typed into it.  It renders as one more option of this
++field rather than as a field of its own, and shows what was typed, since
++for that option the answer is the option."
++  (append
++   (seq-map (lambda (option)
++              (agent-shell-elicitation--make-option-line
++               :id id :field field
++               :value (map-elt option :value)
++               :title (map-elt option :title)
++               :description (map-elt option :description)
++               :action (if multi 'toggle 'select)
++               :multi multi
++               :selected (if multi
++                             (and (member (map-elt option :value) value) t)
++                           (equal (map-elt option :value) value))))
++            (map-elt field :options))
++   (when custom
++     (list (agent-shell-elicitation--make-option-line
++            :id id :field custom
++            :title (if custom-value
++                       (format "%s: %s"
++                               (agent-shell-elicitation--field-heading custom)
++                               custom-value)
++                     (agent-shell-elicitation--field-heading custom))
++            :description (map-elt custom :description)
++            :action 'custom
++            :multi multi
++            :selected (and custom-value t))))))
++
++(cl-defun agent-shell-elicitation--make-field-text (&key id field value custom custom-value)
++  "Return FIELD's rendered lines for elicitation ID given its current VALUE.
++
++Selects render as a heading, an optional description, then one marked
++line per option.  A boolean renders as a lone checkbox carrying its own
++heading, since a single checkbox reads correctly without the extra
++line.  Text-ish fields render as `Heading: value', preceded by their
++description so it is read before the minibuffer opens.
++
++CUSTOM is FIELD's free-text companion and CUSTOM-VALUE what has been
++typed into it, both nil unless FIELD is a select that has one.
++
++For example, a single-select renders as:
++
++    Colour
++    Pick one.
++    (*) Red
++    ( ) Blue"
++  (let ((heading (agent-shell-elicitation--field-heading field))
++        (description (map-elt field :description)))
++    (string-join
++     (delq nil
++           (pcase (map-elt field :type)
++             ((or 'single-select 'multi-select)
++              (append (list (concat agent-shell-elicitation--indent heading)
++                            (when description
++                              (concat agent-shell-elicitation--indent description)))
++                      (agent-shell-elicitation--make-select-lines
++                       :id id :field field :value value
++                       :multi (eq (map-elt field :type) 'multi-select)
++                       :custom custom :custom-value custom-value)))
++             ('boolean
++              (list (concat agent-shell-elicitation--indent
++                            (agent-shell-elicitation--make-control
++                             :text (format "%s %s" (if (eq value t) "[x]" "[ ]") heading)
++                             :id id :key (map-elt field :key) :action 'toggle
++                             :hint "toggle this checkbox"))
++                    (when description
++                      (concat agent-shell-elicitation--indent "    " description))))
++             ('unsupported
++              (list (concat agent-shell-elicitation--indent heading)
++                    (format "%sUnsupported field type \"%s\", left unanswered."
++                            agent-shell-elicitation--indent
++                            (map-elt field :raw-type))))
++             (_
++              (list (when description
++                      (concat agent-shell-elicitation--indent description))
++                    (concat agent-shell-elicitation--indent
++                            (agent-shell-elicitation--make-control
++                             :text (format "%s: %s" heading
++                                           (if value
++                                               (agent-shell-elicitation--render-value field value)
++                                             agent-shell-elicitation--empty-value))
++                             :id id :key (map-elt field :key) :action 'read
++                             :hint "edit this field"))))))
++     "\n")))
++
++(defun agent-shell-elicitation--answered-p (elicitation field)
++  "Return non-nil when FIELD of ELICITATION carries an answer.
++
++Asks the same question the response encoder asks, so the gate on Submit
++and what actually goes out can never disagree: a select answered by its
++free-text companion counts, and so does a checkbox the schema requires.
++
++See `agent-shell-elicitation--field-answer'."
++  (and (agent-shell-elicitation--field-answer
++        :field field :values (map-elt elicitation :values))
++       t))
++
++(defun agent-shell-elicitation--blocker (elicitation)
++  "Return why ELICITATION cannot be submitted, or nil when it can.
++
++A required field this client cannot render blocks submission outright,
++since no value we could send would satisfy the schema; Decline is then
++the only answer left.  A required field merely left empty blocks until
++it is filled in."
++  (when-let* ((field (seq-find
++                      (lambda (field)
++                        (and (map-elt field :required)
++                             (or (eq (map-elt field :type) 'unsupported)
++                                 (not (agent-shell-elicitation--answered-p
++                                       elicitation field)))))
++                      (map-elt elicitation :fields))))
++    (if (eq (map-elt field :type) 'unsupported)
++        (cons 'unsupported
++              (format "\"%s\" is required but uses field type \"%s\", which this client cannot render."
++                      (agent-shell-elicitation--field-heading field)
++                      (map-elt field :raw-type)))
++      (cons 'missing
++            (format "\"%s\" is required."
++                    (agent-shell-elicitation--field-heading field))))))
++
++(defun agent-shell-elicitation--make-buttons (elicitation)
++  "Return ELICITATION's button row, plus the reason Submit is missing.
++
++Submit is dropped when a required field uses a type this client cannot
++render, since no answer we could send would satisfy the schema.  A
++required field that is merely empty keeps Submit, which then reports the
++missing field rather than sending an invalid response."
++  (let* ((blocker (agent-shell-elicitation--blocker elicitation))
++         (unanswerable (eq (car blocker) 'unsupported)))
++    (string-join
++     (delq nil
++           (list
++            (when unanswerable
++              (format "%sCannot submit: %s" agent-shell-elicitation--indent (cdr blocker)))
++            (concat
++             agent-shell-elicitation--indent
++             (unless unanswerable
++               (concat (agent-shell-elicitation--make-control
++                        :text (agent-shell-elicitation--box "Submit")
++                        :id (map-elt elicitation :id) :action 'submit
++                        :hint "submit this form")
++                       " "))
++             (agent-shell-elicitation--make-control
++              :text (agent-shell-elicitation--box "Decline")
++              :id (map-elt elicitation :id) :action 'decline
++              :hint "decline this form"))))
++     "\n\n")))
++
++(defun agent-shell-elicitation--make-answer-lines (elicitation)
++  "Return one \"Question: answer\" line per question ELICITATION answered.
++
++Read from the same answers the response carries, so a settled form and
++the wire can never disagree."
++  (seq-keep (lambda (field)
++              (when-let* ((answer (agent-shell-elicitation--field-answer
++                                   :field field
++                                   :values (map-elt elicitation :values))))
++                (format "%s%s: %s"
++                        agent-shell-elicitation--indent
++                        (agent-shell-elicitation--field-heading field)
++                        (map-elt answer :display))))
++            (agent-shell-elicitation--answerable (map-elt elicitation :fields))))
++
++(defun agent-shell-elicitation--make-settled-text (elicitation)
++  "Return ELICITATION's body once it has been answered, declined or cancelled.
++
++Unlike a permission dialog, which deletes its fragment on answer, a
++settled form stays on screen showing what was sent."
++  (pcase (map-elt elicitation :status)
++    ('answered
++     (if-let* ((answers (agent-shell-elicitation--make-answer-lines elicitation)))
++         (concat agent-shell-elicitation--indent "Answered\n\n"
++                 (string-join answers "\n"))
++       (concat agent-shell-elicitation--indent "Answered with no input")))
++    ('declined (concat agent-shell-elicitation--indent "Declined"))
++    (_ (concat agent-shell-elicitation--indent "Cancelled"))))
++
++(defun agent-shell-elicitation--make-field-texts (elicitation)
++  "Return ELICITATION's questions, one rendered block each.
++
++Companions are left out: each renders inside the select it belongs to,
++so walking both would render one question twice."
++  (seq-map (lambda (field)
++             (agent-shell-elicitation--make-field-text
++              :id (map-elt elicitation :id)
++              :field field
++              :value (map-nested-elt elicitation (list :values (map-elt field :key)))
++              :custom (agent-shell-elicitation--field
++                       elicitation (map-elt field :custom-key))
++              :custom-value (map-nested-elt
++                             elicitation (list :values (map-elt field :custom-key)))))
++           (agent-shell-elicitation--answerable (map-elt elicitation :fields))))
++
++(defun agent-shell-elicitation--mark-form-start (text)
++  "Return TEXT with its first character marked as a form's landing point.
++
++`agent-shell-elicitation-jump-to-latest-form' looks for this mark, so a
++form arriving puts point on the first line that says something -- the
++question when the agent sent one, otherwise the first field's heading --
++rather than on the box border above it.  A screen reader then reads the
++question on arrival, and the whole form lies forward of point.
++
++Marked here rather than found by searching the rendered text, so it
++cannot drift out of step with the layout."
++  (when text
++    (let ((marked (copy-sequence text)))
++      (put-text-property 0 1 'agent-shell-elicitation-form-start t marked)
++      marked)))
++
++(defun agent-shell-elicitation--make-text (elicitation)
++  "Create text to render the form for ELICITATION.
++
++ELICITATION is the entry `agent-shell--state' holds under
++`:elicitations'.  Pure: every interaction mutates that entry and calls
++this again, and the fresh body is pushed through
++`agent-shell--update-fragment'.
++
++For example:
++
++   ╭─
++
++       ? Agent Question ?
++
++       Which approach should I take?
++
++       Approach
++       (*) Refactor first
++       ( ) Add first
++
++        Submit   Decline
++
++   ╰─"
++  (let* ((question (when-let* ((message (map-elt elicitation :message)))
++                     (propertize (concat agent-shell-elicitation--indent message)
++                                 'font-lock-face 'agent-shell-input)))
++         (sections (if (eq (map-elt elicitation :status) 'pending)
++                       (append (agent-shell-elicitation--make-field-texts elicitation)
++                               (list (agent-shell-elicitation--make-buttons elicitation)))
++                     (list (agent-shell-elicitation--make-settled-text elicitation))))
++         (body (delq nil (cons question sections))))
++    (format "╭─
++
++    %s %s %s
++
++%s
++
++╰─"
++            (propertize "?" 'font-lock-face 'agent-shell-warning)
++            (propertize "Agent Question" 'font-lock-face 'agent-shell-permission-title)
++            (propertize "?" 'font-lock-face 'agent-shell-warning)
++            (string-join (cons (agent-shell-elicitation--mark-form-start (car body))
++                               (cdr body))
++                         "\n\n"))))
++
++
++;;; Requests
++
++(cl-defun agent-shell-elicitation--on-create-request (&key state acp-request)
++  "Handle an incoming \"elicitation/create\" ACP-REQUEST with STATE.
++
++Parses the requested schema into fields, stores them under the request
++id and renders the form.  A mode we never advertised is answered with
++an invalid-params error rather than rendered, since responding to it
++would claim a capability we do not have."
++  (unless (member (map-nested-elt acp-request '(params mode))
++                  agent-shell-elicitation--advertised-modes)
++    (acp-send-response
++     :client (map-elt state :client)
++     :response `((:request-id . ,(map-elt acp-request 'id))
++                 (:error . ,(acp-make-error
++                             :code -32602
++                             :message (format "Unsupported elicitation mode: %s"
++                                              (map-nested-elt acp-request '(params mode)))))))
++    (cl-return-from agent-shell-elicitation--on-create-request))
++  (let ((request-id (map-elt acp-request 'id))
++        (tool-call-id (map-nested-elt acp-request '(params toolCallId)))
++        (question (map-nested-elt acp-request '(params message)))
++        (fields (agent-shell-elicitation--parse-schema
++                 :requested-schema (map-nested-elt acp-request '(params requestedSchema)))))
++    (agent-shell-elicitation--put
++     state request-id
++     (list (cons :id request-id)
++           (cons :tool-call-id tool-call-id)
++           ;; The adapter emits the `tool_call' before the elicitation
++           ;; referencing it, so a question already showing as that
++           ;; call's title would otherwise be rendered twice.
++           (cons :message (unless (and tool-call-id
++                                       (equal question
++                                              (map-nested-elt
++                                               state (list :tool-calls tool-call-id :title))))
++                            question))
++           (cons :fields fields)
++           (cons :values (agent-shell-elicitation--initial-values fields))
++           (cons :status 'pending)))
++    ;; Track as active so out-of-turn gating treats the form as in-turn
++    ;; content, the way an in-flight `session/prompt' does.
++    (agent-shell-elicitation--ensure-state state)
++    (map-put! state :active-requests
++              (cons (list (cons :method "elicitation/create")
++                          (cons :id request-id))
++                    (map-elt state :active-requests)))
++    (agent-shell-elicitation--render :state state :id request-id)
++    (agent-shell-elicitation--jump-in-all-buffers :state state)
++    ;; A form left unanswered blocks the turn exactly as an unanswered
++    ;; permission does, so arm the same idle notification the permission
++    ;; path arms.  Cancelled in `agent-shell-elicitation--respond'.
++    (let ((data (list (cons :request-id request-id)
++                      (cons :tool-call-id tool-call-id)
++                      (cons :message question))))
++      (agent-shell--emit-event :event 'elicitation-request :data data)
++      (agent-shell--start-idle-timer :event 'elicitation-request :data data))
++    (map-put! state :last-entry-type "elicitation/create")))
++
++(cl-defun agent-shell-elicitation--render (&key state id)
++  "Re-render elicitation ID's form from STATE.
++
++The only supported re-render path: the UI layer keeps no content model,
++so every interaction mutates state and pushes a freshly built body."
++  (when-let* ((elicitation (agent-shell-elicitation--get state id)))
++    (agent-shell--update-fragment
++     :state state
++     :block-id (format "elicitation-%s" id)
++     :body (with-current-buffer (map-elt state :buffer)
++             (agent-shell-elicitation--make-text elicitation))
++     :expanded t
++     :navigation 'never
++     :above-last-prompt (not (agent-shell--active-requests-p state)))))
++
++(cl-defun agent-shell-elicitation--settle (&key state id)
++  "Leave elicitation ID's answer in STATE on screen, as form or tool call.
++
++A questionnaire bridged from an ask-the-user tool lives on in the tool
++call that raised it, whose `content\=' spells the answers out in prose.
++The form is removed there, so the answer reads the same whether it was
++just given or replayed from a restored session -- the same tool call
++rendering either way, since restore never brings the form back.
++
++Anything else -- an elicitation from an MCP server, or one scoped to a
++request rather than a session -- has no tool call behind it, so the
++settled form stays as the only record of what was asked."
++  (if (agent-shell-elicitation--tool-call-records-p :state state :id id)
++      (agent-shell--delete-fragment
++       :state state :block-id (format "elicitation-%s" id))
++    (agent-shell-elicitation--render :state state :id id)))
++
++(cl-defun agent-shell-elicitation--tool-call-records-p (&key state id)
++  "Return non-nil when elicitation ID's tool call in STATE stands in for its form."
++  (when-let* ((tool-call-id (map-nested-elt state (list :elicitations id :tool-call-id))))
++    (agent-shell-elicitation--questionnaire-p
++     (map-nested-elt state (list :tool-calls tool-call-id :raw-input)))))
++
++(cl-defun agent-shell-elicitation--jump-in-all-buffers (&key state)
++  "Reveal STATE's latest form in the shell buffer and its viewport."
++  (with-current-buffer (map-elt state :buffer)
++    (agent-shell-elicitation-jump-to-latest-form))
++  (when-let* ((viewport-buffer (agent-shell-viewport--buffer
++                               :shell-buffer (map-elt state :buffer)
++                               :existing-only t)))
++    (with-current-buffer viewport-buffer
++      (agent-shell-elicitation-jump-to-latest-form))))
++
++(cl-defun agent-shell-elicitation--respond (&key state id action)
++  "Answer elicitation ID in STATE with ACTION and settle its form.
++
++ACTION is one of `accept', `decline' or `cancel'.  Answering an
++elicitation that already settled is a no-op, so a racing interrupt
++cannot respond to one request twice."
++  (when-let* ((elicitation (agent-shell-elicitation--get state id))
++              ((eq (map-elt elicitation :status) 'pending)))
++    (acp-send-response
++     :client (map-elt state :client)
++     :response (agent-shell-elicitation--make-response
++                :request-id id
++                :action action
++                :fields (map-elt elicitation :fields)
++                :values (map-elt elicitation :values)))
++    (agent-shell-elicitation--put
++     state id
++     (agent-shell-elicitation--assoc-put
++      elicitation :status (pcase action
++                            ('accept 'answered)
++                            ('decline 'declined)
++                            (_ 'cancelled))))
++    (map-put! state :active-requests
++              (seq-remove (lambda (request)
++                            (and (equal (map-elt request :method) "elicitation/create")
++                                 (equal (map-elt request :id) id)))
++                          (map-elt state :active-requests)))
++    (agent-shell-elicitation--settle :state state :id id)
++    ;; Both of these read buffer-local state (the transcript path, the
++    ;; event subscriptions), and answering can be driven from the
++    ;; viewport buffer, so resolve them against the shell.
++    (with-current-buffer (map-elt state :buffer)
++      (agent-shell--cancel-idle-timer)
++      (agent-shell--append-transcript
++       :text (format "\n## Question (%s)\n\n%s\n"
++                     (format-time-string "%F %T")
++                     (substring-no-properties
++                      (agent-shell-elicitation--make-settled-text
++                       (agent-shell-elicitation--get state id))))
++       :file-path agent-shell--transcript-file)
++      (agent-shell--emit-event
++       :event 'elicitation-response
++       :data (list (cons :request-id id)
++                   (cons :action action)
++                   (cons :values (map-elt elicitation :values)))))
++    t))
++
++(cl-defun agent-shell-elicitation--cancel-pending (&key state)
++  "Cancel every pending elicitation in STATE.
++
++Called from `agent-shell-interrupt': without it, interrupting a shell
++that is sitting on a form leaves the agent waiting for an answer that
++is never coming."
++  (seq-reduce (lambda (cancelled entry)
++                ;; `or' with the answer first, so every form is visited
++                ;; rather than stopping at the first one cancelled.
++                (or (agent-shell-elicitation--respond
++                     :state state :id (car entry) :action 'cancel)
++                    cancelled))
++              ;; Copied, since responding rewrites `:elicitations'.
++              (copy-sequence (map-elt state :elicitations))
++              nil))
++
++
++;;; Commands
++
++(defun agent-shell-elicitation--control-at-point ()
++  "Return the elicitation control at point, or nil when there is none."
++  (get-text-property (point) 'agent-shell-elicitation-control))
++
++(defun agent-shell-elicitation--goto-control (control)
++  "Move point back to CONTROL, when it is still rendered in this buffer.
++
++Every interaction replaces the whole form body, so without this point
++would land wherever the replacement left it rather than on the option
++just toggled.  CONTROL carries identity only -- which elicitation,
++field and option -- so it survives the value change that triggered the
++re-render and still matches.
++
++Returns the position moved to, or nil when CONTROL is gone (a settled
++form has no controls left)."
++  (when-let* ((found (save-mark-and-excursion
++                       (goto-char (point-min))
++                       (when-let* ((match (text-property-search-forward
++                                           'agent-shell-elicitation-control
++                                           control #'equal)))
++                         (prop-match-beginning match)))))
++    (goto-char found)
++    (dolist (window (get-buffer-window-list (current-buffer) nil t))
++      (set-window-point window found))
++    found))
++
++(defun agent-shell-elicitation--read-string (prompt initial)
++  "Read a string with PROMPT, prefilled with INITIAL and point at its end.
++
++Prefilled by inserting rather than through `read-string\='s INITIAL-INPUT
++argument, which is deprecated.  Follows
++`agent-shell--prompt-queue-read\=' for the shape."
++  (minibuffer-with-setup-hook
++      (lambda ()
++        (when initial
++          (insert initial)))
++    (read-string prompt)))
++
++(cl-defun agent-shell-elicitation--read-value (&key field value)
++  "Read a new value for FIELD from the minibuffer, starting at VALUE.
++
++A number or integer field loops until the input parses, so bad input is
++rejected while it can still be corrected rather than at submit time.
++An integer field rejects a fractional value rather than truncating it:
++answering 1.9 with 1 would report something the user did not type.
++Each retry is prefilled with the text that was rejected, so the
++correction starts from what was typed.  Returns nil when the field is
++left empty, which omits it from the response.
++
++Quitting the minibuffer leaves the field alone: this runs as an argument
++to the call that stores the value, so nothing is stored."
++  (let ((prompt (format "%s: " (agent-shell-elicitation--field-heading field)))
++        (initial (when value (agent-shell-elicitation--render-value field value))))
++    (pcase (map-elt field :type)
++      ((or 'number 'integer)
++       (let ((wholep (eq (map-elt field :type) 'integer))
++             (input nil)
++             (complaint ""))
++         (while (not input)
++           (let ((read (string-trim (agent-shell-elicitation--read-string
++                                     (concat complaint prompt) initial))))
++             (cond ((string-empty-p read) (setq input 'empty))
++                   ((string-match-p (if wholep
++                                        (rx bos (opt (any "+-")) (+ digit) eos)
++                                      (rx bos (opt (any "+-"))
++                                          (or (seq (+ digit) (opt "." (* digit)))
++                                              (seq "." (+ digit)))
++                                          eos))
++                                    read)
++                    (setq input (string-to-number read)))
++                   ;; Complain in the prompt, which the re-opened minibuffer
++                   ;; would otherwise cover, and hand back the rejected text:
++                   ;; prefilling the original would prepend it to the retry.
++                   (t (setq complaint (if wholep
++                                          "Whole number needed.  "
++                                        "Not a number.  "))
++                      (setq initial read)))))
++         (unless (eq input 'empty) input)))
++      (_ (let ((read (agent-shell-elicitation--read-string prompt initial)))
++           (unless (string-empty-p read) read))))))
++
++(defun agent-shell-elicitation--set-values (state id pairs)
++  "Store PAIRS against elicitation ID in STATE, then re-render once.
++
++PAIRS is an alist of field key to value.  A nil value removes the
++field, so it is omitted from the response.  Applied together because
++picking an option and typing your own answer replace one another: doing
++that in two steps would render an in-between form showing both."
++  (when-let* ((elicitation (agent-shell-elicitation--get state id)))
++    (agent-shell-elicitation--put
++     state id
++     (agent-shell-elicitation--assoc-put
++      elicitation :values
++      (seq-reduce (lambda (values pair)
++                    (if (cdr pair)
++                        (agent-shell-elicitation--assoc-put values (car pair) (cdr pair))
++                      (map-delete (copy-alist values) (car pair))))
++                  pairs
++                  (map-elt elicitation :values))))
++    (agent-shell-elicitation--render :state state :id id)))
++
++(defun agent-shell-elicitation--set-value (state id key value)
++  "Set field KEY of elicitation ID in STATE to VALUE and re-render.
++A nil VALUE removes the field, so it is omitted from the response."
++  (agent-shell-elicitation--set-values state id (list (cons key value))))
++
++(defun agent-shell-elicitation--multi-answer-p (elicitation field)
++  "Return non-nil when FIELD is part of a multi-select question in ELICITATION.
++True for the select itself and for the free-text companion answering it."
++  (eq 'multi-select
++      (map-elt (or (agent-shell-elicitation--field
++                    elicitation (map-elt field :folded-into))
++                   field)
++               :type)))
++
++(defun agent-shell-elicitation--clearing (elicitation key value)
++  "Return ELICITATION field/value pairs binding KEY to VALUE.
++
++Also clears whatever KEY replaces, for a single-select: picking an
++option drops the answer typed in its place, and typing an answer drops
++the option picked in its place, so exactly one of the two is ever sent.
++A multi-select clears nothing, since its ticks and its typed answer are
++one answer together.  Feed the result to
++`agent-shell-elicitation--set-values\='.
++
++For example, given a select `question_0\=' whose free-text companion is
++`question_0_custom\=':
++
++  (agent-shell-elicitation--clearing elicitation \"question_0\" \"Red\")
++  => ((\"question_0\" . \"Red\") (\"question_0_custom\"))"
++  (let ((field (agent-shell-elicitation--field elicitation key)))
++    (cons (cons key value)
++          ;; A multi-select and its typed answer are not alternatives:
++          ;; ticking boxes and adding one of your own is one answer, and
++          ;; they are combined on the way out rather than clearing here.
++          (unless (agent-shell-elicitation--multi-answer-p elicitation field)
++            (seq-keep (lambda (other) (when other (cons other nil)))
++                      (list (map-elt field :custom-key)
++                            (map-elt field :folded-into)))))))
++
++(defun agent-shell-elicitation-act ()
++  "Act on the elicitation control at point.
++
++Reads which elicitation, field and option the control names from its
++text properties, then mutates the authoritative entry in
++`agent-shell--state' and re-renders.  Named rather than a per-control
++closure so it stays rebindable (see issue #759)."
++  (declare (modes agent-shell-mode))
++  (interactive)
++  (let ((control (agent-shell-elicitation--control-at-point))
++        (shell-buffer (agent-shell-elicitation--shell-buffer))
++        (acted-in (current-buffer)))
++    (unless control
++      (user-error "No question control at point"))
++    (with-current-buffer shell-buffer
++      (let* ((state (agent-shell--state))
++             (id (map-elt control :id))
++             (elicitation (agent-shell-elicitation--get state id)))
++        (unless (and elicitation (eq (map-elt elicitation :status) 'pending))
++          (user-error "This question is no longer awaiting an answer"))
++        (pcase (map-elt control :action)
++          ('select
++           (agent-shell-elicitation--set-values
++            state id (agent-shell-elicitation--clearing
++                      elicitation (map-elt control :key) (map-elt control :value))))
++          ('toggle
++           (let ((current (map-nested-elt elicitation
++                                          (list :values (map-elt control :key)))))
++             (agent-shell-elicitation--set-values
++              state id
++              (agent-shell-elicitation--clearing
++               elicitation (map-elt control :key)
++               (if (map-elt control :value)
++                   (if (member (map-elt control :value) current)
++                       (remove (map-elt control :value) current)
++                     (append current (list (map-elt control :value))))
++                 (if (eq current t) :false t))))))
++          ;; A free-text field and a free-text answer to a select are the
++          ;; same minibuffer read; only what it clears differs.
++          ((or 'read 'custom)
++           (agent-shell-elicitation--set-values
++            state id
++            (agent-shell-elicitation--clearing
++             elicitation (map-elt control :key)
++             (agent-shell-elicitation--read-value
++              :field (agent-shell-elicitation--field elicitation (map-elt control :key))
++              :value (map-nested-elt elicitation
++                                     (list :values (map-elt control :key)))))))
++          ('submit (agent-shell-elicitation--submit :state state :id id))
++          ('decline
++           (agent-shell-elicitation--respond :state state :id id :action 'decline)
++           (message "Declined")))))
++    (with-current-buffer acted-in
++      (agent-shell-elicitation--goto-control control))))
++
++(cl-defun agent-shell-elicitation--submit (&key state id)
++  "Submit elicitation ID in STATE, or say why it cannot be submitted."
++  (if-let* ((blocker (agent-shell-elicitation--blocker
++                      (agent-shell-elicitation--get state id))))
++      (user-error "Cannot submit: %s" (cdr blocker))
++    (agent-shell-elicitation--respond :state state :id id :action 'accept)
++    (message "Answer sent")))
++
++(defun agent-shell-elicitation-interrupt ()
++  "Interrupt the shell backing the form at point.
++
++Bound on the form's own controls so the usual interrupt key still works
++there, where `agent-shell-mode-map' is shadowed by the form's keymap."
++  (declare (modes agent-shell-mode))
++  (interactive)
++  (with-current-buffer (agent-shell-elicitation--shell-buffer)
++    (agent-shell-interrupt t)))
++
++
++;;; Navigation
++
++(defun agent-shell-elicitation-next-field ()
++  "Jump to the next elicitation form control."
++  (declare (modes agent-shell-mode))
++  (interactive)
++  (when-let* ((found (save-mark-and-excursion
++                       (when (get-text-property (point) 'agent-shell-elicitation-navigable)
++                         (when-let* ((next-change (next-single-property-change
++                                                   (point) 'agent-shell-elicitation-navigable)))
++                           (goto-char next-change)))
++                       (when-let* ((next (text-property-search-forward
++                                          'agent-shell-elicitation-navigable t t)))
++                         (prop-match-beginning next)))))
++    (deactivate-mark)
++    (goto-char found)
++    found))
++
++(defun agent-shell-elicitation-previous-field ()
++  "Jump to the previous elicitation form control."
++  (declare (modes agent-shell-mode))
++  (interactive)
++  (when-let* ((found (save-mark-and-excursion
++                       (when (get-text-property (point) 'agent-shell-elicitation-navigable)
++                         (when-let* ((prev-change (previous-single-property-change
++                                                   (point) 'agent-shell-elicitation-navigable)))
++                           (goto-char prev-change)))
++                       (when-let* ((prev (text-property-search-backward
++                                          'agent-shell-elicitation-navigable t t)))
++                         (prop-match-beginning prev)))))
++    (deactivate-mark)
++    (goto-char found)
++    found))
++
++(defun agent-shell-elicitation-jump-to-latest-form ()
++  "Jump to the top of the latest elicitation form.
++
++Point lands on the first line of the form that says something -- the
++question when the agent sent one, otherwise the first field's heading --
++so a screen reader reads the question on arrival and the whole form,
++every option and both buttons, lies forward of point.  Landing on a
++control instead would leave the question above point, where TAB does not
++reach it: only controls are navigable, so the question text and field
++headings are not stops in either direction.
++
++Syncs that position into every window showing the buffer, across
++frames, so the form is revealed even when the shell window is not the
++selected one.  A bare `goto-char' would only move point in the selected
++window.
++
++Returns non-nil if a form was found, nil otherwise."
++  (declare (modes agent-shell-mode))
++  (interactive)
++  (when-let* ((found (save-mark-and-excursion
++                       (goto-char (point-max))
++                       (when-let* ((match (text-property-search-backward
++                                           'agent-shell-elicitation-form-start t t)))
++                         (prop-match-beginning match)))))
++    (deactivate-mark)
++    (goto-char found)
++    (dolist (window (get-buffer-window-list (current-buffer) nil t))
++      (set-window-point window found))
++    t))
++
++(provide 'agent-shell-elicitation)
++
++;;; agent-shell-elicitation.el ends here
+diff --git a/agent-shell-viewport.el b/agent-shell-viewport.el
+index 8d73d3d5..5f0a740e 100644
+--- a/agent-shell-viewport.el
++++ b/agent-shell-viewport.el
+@@ -58,6 +58,8 @@
+ (declare-function agent-shell-interaction-at-point "agent-shell")
+ (declare-function agent-shell-copy-session-id "agent-shell")
+ (declare-function agent-shell-cycle-session-mode "agent-shell")
++(declare-function agent-shell-elicitation-next-field "agent-shell-elicitation")
++(declare-function agent-shell-elicitation-previous-field "agent-shell-elicitation")
+ (declare-function agent-shell-interrupt "agent-shell")
+ (declare-function agent-shell-interrupt-confirmed-p "agent-shell")
+ (declare-function agent-shell-open-transcript "agent-shell")
+@@ -638,6 +640,8 @@ in, landing on the item after it rather than on its next cell."
+                       (agent-shell-ui-forward-block)))
+          (button-pos (save-mark-and-excursion
+                        (agent-shell-next-permission-button)))
++         (field-pos (save-mark-and-excursion
++                      (agent-shell-elicitation-next-field)))
+          (image-pos (save-mark-and-excursion
+                       (agent-shell-markdown--next-visible-image)))
+          (link-pos (save-mark-and-excursion
+@@ -657,6 +661,7 @@ in, landing on the item after it rather than on its next cell."
+                                                           response-start
+                                                           block-pos
+                                                           button-pos
++                                                          field-pos
+                                                           image-pos
+                                                           link-pos
+                                                           source-block-pos
+@@ -704,6 +709,8 @@ in, as `agent-shell-viewport-next-item' does from its end."
+                       (agent-shell-ui-backward-block)))
+          (button-pos (save-mark-and-excursion
+                        (agent-shell-previous-permission-button)))
++         (field-pos (save-mark-and-excursion
++                      (agent-shell-elicitation-previous-field)))
+          (image-pos (save-mark-and-excursion
+                       (agent-shell-markdown--previous-visible-image)))
+          (link-pos (save-mark-and-excursion
+@@ -725,6 +732,7 @@ in, as `agent-shell-viewport-next-item' does from its end."
+                                                           response-start
+                                                           block-pos
+                                                           button-pos
++                                                          field-pos
+                                                           image-pos
+                                                           link-pos
+                                                           source-block-pos
+diff --git a/agent-shell.el b/agent-shell.el
+index a8138cc8..ecc3bfa7 100644
+--- a/agent-shell.el
++++ b/agent-shell.el
+@@ -66,6 +66,7 @@
+ (require 'agent-shell-cursor)
+ (require 'agent-shell-devcontainer)
+ (require 'agent-shell-diff)
++(require 'agent-shell-elicitation)
+ (require 'agent-shell-experimental)
+ (require 'agent-shell-droid)
+ (require 'agent-shell-github)
+@@ -1206,6 +1207,7 @@ OUTGOING-REQUEST-DECORATOR (passed through to `acp-make-client')."
+         (cons :request-count 0)
+         (cons :last-activity-time nil)
+         (cons :tool-calls nil)
++        (cons :elicitations nil)
+         (cons :available-commands nil)
+         (cons :available-modes nil)
+         (cons :supports-session-list nil)
+@@ -2034,7 +2036,8 @@ Returns one of:
+   (with-current-buffer (or shell-buffer (current-buffer))
+     (cond
+      ((and (shell-maker-busy)
+-           (agent-shell--permission-pending-p)) 'blocked)
++           (or (agent-shell--permission-pending-p)
++               (agent-shell-elicitation--pending-p))) 'blocked)
+      (t
+       (if (shell-maker-busy)
+           'busy
+@@ -2071,6 +2074,9 @@ See also `agent-shell-confirm-interrupt'."
+                  :state (agent-shell--state)
+                  :tool-call-id tool-call-id)))
+             (map-elt (agent-shell--state) :tool-calls))
++           ;; Then cancel any form still waiting on an answer, or the
++           ;; agent keeps waiting for one that is never coming.
++           (agent-shell-elicitation--cancel-pending :state (agent-shell--state))
+            ;; Then send the cancel notification
+            (acp-send-notification
+             :client (map-elt (agent-shell--state) :client)
+@@ -3164,9 +3170,14 @@ Clears STATE's `:expanded-activity-group'."
+                     ;; like MCP calls.
+                     (tool-call-kind (map-nested-elt state `(:tool-calls ,tool-call-id :kind)))
+                     (saved-input (map-nested-elt state `(:tool-calls ,tool-call-id :raw-input)))
++                    ;; A questionnaire's input is the questions themselves,
++                    ;; which the tool call's own `content' already spells out
++                    ;; in prose, so dumping it as JSON only repeats it.
+                     (input-block (when (and (member tool-call-kind '(nil "other"))
+                                             saved-input
+-                                            (not saved-command))
++                                            (not saved-command)
++                                            (not (agent-shell-elicitation--questionnaire-p
++                                                  saved-input)))
+                                    (agent-shell--format-tool-call-input saved-input))))
+                (agent-shell--update-fragment
+                 :state state
+@@ -3177,6 +3188,11 @@ Clears STATE's `:expanded-activity-group'."
+                 :group-label agent-shell--activity-group-label
+                 :group-expanded (agent-shell--activity-group-initial-expanded-p)
+                 :body (cond
++                       ;; A form is showing these questions interactively
++                       ;; just below, so repeating them here would ask twice.
++                       ((agent-shell-elicitation--pending-for-tool-call-p
++                         :state state :tool-call-id tool-call-id)
++                        "")
+                        (command-block
+                         (concat command-block "\n\n" (string-trim body-text)))
+                        (input-block
+@@ -3349,6 +3365,10 @@ Clears STATE's `:expanded-activity-group'."
+          (agent-shell-experimental--on-session-push-request
+           :state state
+           :acp-request acp-request))
++        ((equal (map-elt acp-request 'method) "elicitation/create")
++         (agent-shell-elicitation--on-create-request
++          :state state
++          :acp-request acp-request))
+         (t
+          (let ((method (map-elt acp-request 'method)))
+            (agent-shell--update-fragment
+@@ -4215,7 +4235,11 @@ STATUS is one of: \"pending\", \"in_progress\", \"completed\", \"failed\".
+ See URL `https://agentclientprotocol.com/protocol/schema#toolcallstatus'.
+ 
+ KIND is the tool call kind string (e.g. \"read\", \"edit\", \"execute\") or nil.
+-See URL `https://agentclientprotocol.com/protocol/tool-calls'."
++See URL `https://agentclientprotocol.com/protocol/tool-calls'.
++
++KIND is not limited to the kinds ACP defines.  A tool call carrying a
++questionnaire is passed as \"question\" whatever kind the agent gave it,
++so handle an unrecognised KIND rather than assuming the enum."
+   :type 'function
+   :group 'agent-shell)
+ 
+@@ -4294,7 +4318,13 @@ Returns propertized labels in :status and :title propertized."
+                          (propertize description 'font-lock-face 'default)))))
+       `((:status . ,(agent-shell--make-status-kind-label
+                      :status (map-elt tool-call :status)
+-                     :kind (map-elt tool-call :kind)))
++                     ;; A call carrying a questionnaire is a question,
++                     ;; whatever kind the agent gave it: those bridged from
++                     ;; an ask-the-user tool arrive as the catch-all "other".
++                     :kind (if (agent-shell-elicitation--questionnaire-p
++                                (map-elt tool-call :raw-input))
++                               "question"
++                             (map-elt tool-call :kind))))
+         (:title . ,(if (and label stats)
+                        (concat label " " stats)
+                      (or label stats)))))))
+@@ -5100,6 +5130,8 @@ insert the character instead."
+                         (agent-shell-ui-forward-block)))
+            (button-pos (save-mark-and-excursion
+                          (agent-shell-next-permission-button)))
++           (field-pos (save-mark-and-excursion
++                        (agent-shell-elicitation-next-field)))
+            (image-pos (save-mark-and-excursion
+                         (agent-shell-markdown--next-visible-image)))
+            (link-pos (save-mark-and-excursion
+@@ -5117,6 +5149,7 @@ insert the character instead."
+                                            (delq nil (list prompt-pos
+                                                            block-pos
+                                                            button-pos
++                                                           field-pos
+                                                            image-pos
+                                                            link-pos
+                                                            source-block-pos
+@@ -5167,6 +5200,8 @@ insert the character instead."
+                         (agent-shell-ui-backward-block)))
+            (button-pos (save-mark-and-excursion
+                          (agent-shell-previous-permission-button)))
++           (field-pos (save-mark-and-excursion
++                        (agent-shell-elicitation-previous-field)))
+            (image-pos (save-mark-and-excursion
+                         (agent-shell-markdown--previous-visible-image)))
+            (link-pos (save-mark-and-excursion
+@@ -5186,6 +5221,7 @@ insert the character instead."
+                                            (delq nil (list prompt-pos
+                                                            block-pos
+                                                            button-pos
++                                                           field-pos
+                                                            image-pos
+                                                            link-pos
+                                                            source-block-pos
+@@ -6367,6 +6403,38 @@ through to `acp-send-request'."
+                    (funcall on-failure acp-error raw-message)))
+    :sync sync))
+ 
++(defun agent-shell--make-initialize-request ()
++  "Instantiate the \"initialize\" request this client sends on startup.
++
++Built here rather than taken wholesale from `acp-make-initialize-request\='
++because that helper hardcodes `clientCapabilities\=' to the `fs\=' pair and
++has no way to advertise elicitation support.
++
++`elicitation\=' names the modes we can render.  An empty object there
++would mean zero modes, so the `form\=' key must be present for the
++capability to say anything.  `url\=' is deliberately absent: an agent
++must not send a mode the client did not advertise, and directing the
++user to a URL is a separate feature we do not implement.
++
++For example:
++
++  (agent-shell--make-initialize-request)
++  => ((:method . \"initialize\")
++      (:params . ((clientInfo . ((name . \"agent-shell\") ...))
++                  (protocolVersion . 1)
++                  (clientCapabilities
++                   . ((fs . ((readTextFile . t) (writeTextFile . t)))
++                      (elicitation . ((form . nil))))))))"
++  `((:method . "initialize")
++    (:params . ((clientInfo . ((name . "agent-shell")
++                               (title . "Emacs Agent Shell")
++                               (version . ,agent-shell--version)))
++                (protocolVersion . 1)
++                (clientCapabilities
++                 . ((fs . ((readTextFile . ,(if agent-shell-text-file-capabilities t :false))
++                           (writeTextFile . ,(if agent-shell-text-file-capabilities t :false))))
++                    (elicitation . ((form . nil)))))))))
++
+ (cl-defun agent-shell--initiate-handshake (&key shell-buffer on-initiated)
+   "Initiate ACP handshake with SHELL-BUFFER.
+ 
+@@ -6382,13 +6450,7 @@ Must provide ON-INITIATED (lambda ())."
+   (agent-shell--send-request
+    :state agent-shell--state
+    :client (map-elt agent-shell--state :client)
+-   :request (acp-make-initialize-request
+-             :protocol-version 1
+-             :client-info `((name . "agent-shell")
+-                            (title . "Emacs Agent Shell")
+-                            (version . ,agent-shell--version))
+-             :read-text-file-capability agent-shell-text-file-capabilities
+-             :write-text-file-capability agent-shell-text-file-capabilities)
++   :request (agent-shell--make-initialize-request)
+    :on-success (lambda (acp-response)
+                  (with-current-buffer shell-buffer
+                    (let ((acp-session-capabilities (or (map-elt acp-response 'sessionCapabilities)
+@@ -8047,6 +8109,7 @@ reads the buffer's prompt capabilities."
+                    ;; a session prompt request is finished.
+                    ;; Avoid accumulating them unnecessarily.
+                    (map-put! (agent-shell--state) :tool-calls nil)
++                   (agent-shell-elicitation--clear :state (agent-shell--state))
+                    ;; The turn is over, so nothing is active any more: fold
+                    ;; the last activity group `latest' left expanded.
+                    (agent-shell--collapse-expanded-activity-group (agent-shell--state))
+diff --git a/tests/agent-shell-elicitation-tests.el b/tests/agent-shell-elicitation-tests.el
+new file mode 100644
+index 00000000..d7894a26
+--- /dev/null
++++ b/tests/agent-shell-elicitation-tests.el
+@@ -0,0 +1,987 @@
++;;; agent-shell-elicitation-tests.el --- Tests for agent-shell-elicitation -*- lexical-binding: t; -*-
++
++;;; Commentary:
++;; Tests for ACP `elicitation/create' handling: schema parsing, response
++;; encoding, request handling and keymap scoping.
++
++;;; Code:
++
++(require 'ert)
++(require 'cl-lib)
++(require 'json)
++;; `agent-shell-elicitation' only declares what it borrows from these.
++(require 'agent-shell)
++(require 'agent-shell-elicitation)
++
++(defun agent-shell-elicitation-tests--state ()
++  "Return a plain state alist standing in for a shell's."
++  (list (cons :buffer (current-buffer))
++        (cons :client 'test-client)
++        (cons :tool-calls nil)
++        (cons :elicitations nil)
++        (cons :active-requests nil)
++        (cons :event-subscriptions nil)
++        (cons :idle-timer nil)
++        (cons :last-entry-type nil)))
++
++(cl-defun agent-shell-elicitation-tests--request (&key (id 1) (mode "form") tool-call-id
++                                                       (message "Pick one") schema)
++  "Return an `elicitation/create' request as it arrives off the wire.
++
++ID, MODE, TOOL-CALL-ID, MESSAGE and SCHEMA fill the request in.  Note
++repeated JSON fields are vectors, matching how acp.el decodes them."
++  `((id . ,id)
++    (method . "elicitation/create")
++    (params . ((mode . ,mode)
++               (sessionId . "session-1")
++               ,@(when tool-call-id `((toolCallId . ,tool-call-id)))
++               (message . ,message)
++               (requestedSchema . ,schema)))))
++
++(cl-defmacro agent-shell-elicitation-tests--with-shell ((state-var sent-var &optional bodies-var)
++                                                        &rest body)
++  "Run BODY with a stubbed shell, binding STATE-VAR, SENT-VAR and BODIES-VAR.
++
++STATE-VAR holds the fake state, SENT-VAR collects every response handed
++to `acp-send-response', and BODIES-VAR collects every fragment body
++pushed, newest first."
++  (declare (indent 1) (debug t))
++  (let ((bodies (or bodies-var (gensym "bodies"))))
++    `(with-temp-buffer
++       (let ((,state-var (agent-shell-elicitation-tests--state))
++             (,sent-var nil)
++             (,bodies nil))
++         (cl-letf (((symbol-function 'agent-shell--state)
++                    (lambda () ,state-var))
++                   ((symbol-function 'agent-shell--update-fragment)
++                    (lambda (&rest args) (push (plist-get args :body) ,bodies)))
++                   ((symbol-function 'agent-shell-viewport--buffer)
++                    (lambda (&rest _) nil))
++                   ((symbol-function 'agent-shell--append-transcript)
++                    (lambda (&rest _)))
++                   ((symbol-function 'acp-send-response)
++                    (lambda (&rest args) (push (plist-get args :response) ,sent-var))))
++           ,@body)))))
++
++
++;;; Schema parsing
++
++(ert-deftest agent-shell-elicitation-parse-schema-covers-every-variant-test ()
++  "Every `ElicitationPropertySchema' variant parses, in both spellings.
++
++Advertising `elicitation.form' promises to render any form the schema
++permits, so a variant that parsed to nothing would leave a question the
++user cannot answer."
++  (dolist (case '((((type . "string")
++                    (oneOf . [((const . "a") (title . "A") (description . "First"))]))
++                   . (single-select (("a" "A" "First"))))
++                  (((type . "string") (enum . ["a" "b"]))
++                   . (single-select (("a" "a" nil) ("b" "b" nil))))
++                  (((type . "array") (items . ((anyOf . [((const . "a") (title . "A"))]))))
++                   . (multi-select (("a" "A" nil))))
++                  (((type . "array") (items . ((enum . ["a"]))))
++                   . (multi-select (("a" "a" nil))))
++                  (((type . "string")) . (string nil))
++                  (((type . "number")) . (number nil))
++                  (((type . "integer")) . (integer nil))
++                  (((type . "boolean")) . (boolean nil))
++                  (((type . "gizmo")) . (unsupported nil))))
++    (let ((field (seq-first (agent-shell-elicitation--parse-schema
++                             :requested-schema `((type . "object")
++                                                 (properties . ((f . ,(car case)))))))))
++      (should (equal (map-elt field :type) (nth 0 (cdr case))))
++      (should (equal (map-elt field :key) "f"))
++      (should (equal (seq-map (lambda (option)
++                                (list (map-elt option :value)
++                                      (map-elt option :title)
++                                      (map-elt option :description)))
++                              (map-elt field :options))
++                     (nth 1 (cdr case)))))))
++
++(ert-deftest agent-shell-elicitation-parse-schema-keeps-property-order-test ()
++  "Fields render in the order the agent sent them."
++  (should (equal (seq-map (lambda (field) (map-elt field :key))
++                          (agent-shell-elicitation--parse-schema
++                           :requested-schema '((type . "object")
++                                               (properties . ((zebra . ((type . "string")))
++                                                              (apple . ((type . "string")))
++                                                              (mango . ((type . "string"))))))))
++                 '("zebra" "apple" "mango"))))
++
++(ert-deftest agent-shell-elicitation-parse-schema-marks-required-test ()
++  "`required' names which fields must carry a value, and arrives as a vector."
++  (let ((fields (agent-shell-elicitation--parse-schema
++                 :requested-schema '((type . "object")
++                                     (properties . ((a . ((type . "string")))
++                                                    (b . ((type . "string")))))
++                                     (required . ["b"])))))
++    (should-not (map-elt (seq-first fields) :required))
++    (should (map-elt (seq-elt fields 1) :required))))
++
++(ert-deftest agent-shell-elicitation-parse-schema-seeds-defaults-test ()
++  "Defaults seed the starting values, with array defaults arriving as vectors."
++  (let ((fields (agent-shell-elicitation--parse-schema
++                 :requested-schema '((type . "object")
++                                     (properties
++                                      . ((pick . ((type . "string") (enum . ["a" "b"])
++                                                  (default . "b")))
++                                         (tags . ((type . "array") (items . ((enum . ["a" "b"])))
++                                                  (default . ["a" "b"])))
++                                         (n . ((type . "integer") (default . 3)))
++                                         (flag . ((type . "boolean") (default . t)))
++                                         (note . ((type . "string")))))))))
++    (should (equal (map-elt fields "pick") nil))
++    (let ((values (agent-shell-elicitation--initial-values fields)))
++      (should (equal (map-elt values "pick") "b"))
++      (should (equal (map-elt values "tags") '("a" "b")))
++      (should (equal (map-elt values "n") 3))
++      (should (equal (map-elt values "flag") t))
++      ;; No default and not a checkbox, so it starts absent and is
++      ;; omitted from the response rather than sent as null.
++      (should-not (assoc "note" values)))))
++
++(ert-deftest agent-shell-elicitation-checkbox-answers-only-when-it-means-something-test ()
++  "A checkbox answers when ticked, when required, or when it has a default.
++
++Otherwise it is left out: an unticked optional box is indistinguishable
++on screen from one the user never reached.  Required is the exception,
++since omitting it would leave a box that can neither be submitted nor
++answered in the negative."
++  (dolist (case '((;; optional, no default: silent either way
++                   nil nil ((nil . nil) (("flag" . t) . ((flag . t)))
++                            (("flag" . :false) . nil)))
++                  (;; required: answers, including `no\=', and never blocks
++                   t nil ((nil . ((flag . :false)))
++                          (("flag" . t) . ((flag . t)))))
++                  (;; defaulted: confirming or overturning both count
++                   nil t ((nil . ((flag . t)))
++                          (("flag" . :false) . ((flag . :false)))))))
++    (let* ((required (nth 0 case))
++           (default (nth 1 case))
++           (fields (agent-shell-elicitation--parse-schema
++                    :requested-schema
++                    `((type . "object")
++                      (properties . ((flag . ((type . "boolean")
++                                              ,@(when default '((default . t)))))))
++                      ,@(when required '((required . ["flag"]))))))
++           (seeded (agent-shell-elicitation--initial-values fields)))
++      ;; A required checkbox must never be what stops a form submitting.
++      (should-not (agent-shell-elicitation--blocker
++                   (list (cons :fields fields) (cons :values seeded))))
++      (dolist (expectation (nth 2 case))
++        (should (equal (agent-shell-elicitation--make-content
++                        :fields fields
++                        :values (if (car expectation)
++                                    (list (car expectation))
++                                  seeded))
++                       (cdr expectation)))))))
++
++;;; Free-text companions
++
++(defconst agent-shell-elicitation-tests--ask-schema
++  '((type . "object")
++    (properties
++     (question_0 (type . "string") (title . "Colour")
++                 (oneOf . [((const . "Red") (title . "Red"))
++                           ((const . "Blue") (title . "Blue"))]))
++     (question_0_custom
++      (type . "string") (title . "Other")
++      (description . "Type your own answer instead of choosing an option above (optional).")
++      (_meta (_askUserQuestionCustomAnswer
++              (questionId . "question_0") (isCustomAnswer . t))))))
++  "The schema Claude's `AskUserQuestion' bridge really sends, captured live.")
++
++(ert-deftest agent-shell-elicitation-folds-custom-answer-into-its-select-test ()
++  "A free-text companion renders as one more option of the question it answers.
++
++Left as a field of its own, it renders as a second question and can be
++answered alongside the first in contradictory ways."
++  (let ((fields (agent-shell-elicitation--parse-schema
++                 :requested-schema agent-shell-elicitation-tests--ask-schema)))
++    (should (equal (map-elt (seq-first fields) :custom-key) "question_0_custom"))
++    (should (equal (map-elt (seq-elt fields 1) :folded-into) "question_0"))
++    (should-not (map-elt (seq-first fields) :folded-into)))
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema agent-shell-elicitation-tests--ask-schema))
++    (let ((body (substring-no-properties (car bodies))))
++      ;; One question, one list, with the free-text answer among the options.
++      (should (string-match-p "Colour" body))
++      (should (string-match-p "( ) Red" body))
++      (should (string-match-p "( ) Other" body))
++      ;; Not also standing alone as a `Other: (empty)' text field.
++      (should-not (string-match-p "Other: (empty)" body)))))
++
++(ert-deftest agent-shell-elicitation-option-and-custom-answer-replace-each-other-test ()
++  "Picking an option drops a typed answer, and typing one drops the pick.
++
++They are alternatives, so exactly one of them is ever sent."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema agent-shell-elicitation-tests--ask-schema))
++    (cl-flet ((set-to (key value)
++                (agent-shell-elicitation--set-values
++                 state 5 (agent-shell-elicitation--clearing
++                          (agent-shell-elicitation--get state 5) key value))))
++      (set-to "question_0" "Red")
++      (should (equal (map-elt (agent-shell-elicitation--get state 5) :values)
++                     '(("question_0" . "Red"))))
++      (should (string-match-p "(\\*) Red" (substring-no-properties (car bodies))))
++      (set-to "question_0_custom" "teal, actually")
++      (should (equal (map-elt (agent-shell-elicitation--get state 5) :values)
++                     '(("question_0_custom" . "teal, actually"))))
++      (let ((body (substring-no-properties (car bodies))))
++        (should (string-match-p "( ) Red" body))
++        (should (string-match-p "(\\*) Other: teal, actually" body)))
++      (set-to "question_0" "Blue")
++      (should (equal (map-elt (agent-shell-elicitation--get state 5) :values)
++                     '(("question_0" . "Blue")))))))
++
++(defconst agent-shell-elicitation-tests--multi-ask-schema
++  '((type . "object")
++    (properties
++     (question_0 (type . "array") (title . "Colours")
++                 (items . ((anyOf . [((const . "Red") (title . "Red"))
++                                     ((const . "Blue") (title . "Blue"))
++                                     ((const . "Green") (title . "Green"))]))))
++     (question_0_custom
++      (type . "string") (title . "Other")
++      (description . "Type your own answer instead of choosing an option above (optional).")
++      (_meta (_askUserQuestionCustomAnswer
++              (questionId . "question_0") (isCustomAnswer . t))))))
++  "The multi-select shape Claude's `AskUserQuestion' bridge sends, captured live.")
++
++(ert-deftest agent-shell-elicitation-multi-select-keeps-ticks-and-typed-answer-test ()
++  "Ticking boxes and typing your own answer coexist on a multi-select.
++
++Unlike a single-select, where the two are alternatives, here they are
++one answer: the user picked these and also wants to add that.  The
++companion folds in as one more checkbox rather than a field of its own."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema agent-shell-elicitation-tests--multi-ask-schema))
++    (let ((body (substring-no-properties (car bodies))))
++      (should (string-match-p "\\[ \\] Red" body))
++      (should (string-match-p "\\[ \\] Green" body))
++      ;; A checkbox, not a radio button, and not standing alone.
++      (should (string-match-p "\\[ \\] Other" body))
++      (should-not (string-match-p "Other: (empty)" body)))
++    (cl-flet ((set-to (key value)
++                (agent-shell-elicitation--set-values
++                 state 5 (agent-shell-elicitation--clearing
++                          (agent-shell-elicitation--get state 5) key value))))
++      (set-to "question_0" '("Red" "Blue"))
++      (set-to "question_0_custom" "teal"))
++    ;; Neither cleared the other.
++    (should (equal (map-nested-elt (agent-shell-elicitation--get state 5)
++                                   '(:values "question_0"))
++                   '("Red" "Blue")))
++    (should (equal (map-nested-elt (agent-shell-elicitation--get state 5)
++                                   '(:values "question_0_custom"))
++                   "teal"))
++    (let ((body (substring-no-properties (car bodies))))
++      (should (string-match-p "\\[x\\] Red" body))
++      (should (string-match-p "\\[x\\] Blue" body))
++      (should (string-match-p "\\[x\\] Other: teal" body)))))
++
++(ert-deftest agent-shell-elicitation-multi-select-wire-encoding-test ()
++  "Ticks alone travel as an array; ticks plus typed text as one string.
++
++Sent as two fields the ticks are lost: an agent bridging its
++ask-the-user tool onto elicitation reads the companion first and
++returns early.  Verified against the Claude adapter, which reported back
++only the typed word when both were sent."
++  (dolist (case '(((("question_0" . ("Red" "Green")))
++                   . ((question_0 . ["Red" "Green"])))
++                  ((("question_0" . ("Red" "Blue")) ("question_0_custom" . "teal"))
++                   . ((question_0_custom . "Red, Blue, teal")))))
++    (agent-shell-elicitation-tests--with-shell (state sent bodies)
++      (agent-shell--on-request
++       :state state
++       :acp-request (agent-shell-elicitation-tests--request
++                     :id 5 :schema agent-shell-elicitation-tests--multi-ask-schema))
++      (dolist (pair (car case))
++        (agent-shell-elicitation--set-value state 5 (car pair) (cdr pair)))
++      (agent-shell-elicitation--submit :state state :id 5)
++      (should (equal (map-nested-elt (seq-first sent) '(:result content)) (cdr case)))
++      ;; The settled form says exactly what went out, on one line.
++      (should (= 1 (seq-count (lambda (line) (string-match-p "Colours:" line))
++                              (split-string (substring-no-properties (car bodies)) "\n")))))))
++
++(ert-deftest agent-shell-elicitation-sends-custom-answer-alone-test ()
++  "A typed answer goes out on its own, with no option alongside it.
++
++The agent reads the companion first and returns early, so the option it
++replaced must be absent rather than merely ignored."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema agent-shell-elicitation-tests--ask-schema))
++    (agent-shell-elicitation--set-values
++     state 5 (agent-shell-elicitation--clearing
++              (agent-shell-elicitation--get state 5) "question_0_custom" "teal"))
++    (agent-shell-elicitation--submit :state state :id 5)
++    (should (equal (seq-first sent)
++                   '((:request-id . 5)
++                     (:result . ((action . "accept")
++                                 (content . ((question_0_custom . "teal"))))))))
++    ;; Settled, the answer reads under the question it answered, not "Other".
++    (should (string-match-p "Colour: teal" (substring-no-properties (car bodies))))))
++
++(ert-deftest agent-shell-elicitation-custom-answer-satisfies-required-select-test ()
++  "Typing your own answer answers a required question.
++
++The select itself stays empty, so a naive presence check would refuse to
++submit a form the user has in fact filled in."
++  (agent-shell-elicitation-tests--with-shell (state sent)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5
++                   :schema (append agent-shell-elicitation-tests--ask-schema
++                                   '((required . ["question_0"])))))
++    (should-error (agent-shell-elicitation--submit :state state :id 5) :type 'user-error)
++    (agent-shell-elicitation--set-values
++     state 5 (agent-shell-elicitation--clearing
++              (agent-shell-elicitation--get state 5) "question_0_custom" "teal"))
++    (agent-shell-elicitation--submit :state state :id 5)
++    (should (equal (map-nested-elt (seq-first sent) '(:result content))
++                   '((question_0_custom . "teal"))))))
++
++(ert-deftest agent-shell-elicitation-dangling-custom-answer-stays-standalone-test ()
++  "A companion naming a field that is not a select renders on its own.
++
++Folding it away would hide a field the user can still be asked to fill
++in, so an unrecognised link is left alone rather than trusted."
++  (dolist (schema '(;; Names a field that is not in this schema at all.
++                    ((type . "object")
++                     (properties
++                      (stray (type . "string") (title . "Other")
++                             (_meta (_askUserQuestionCustomAnswer
++                                     (questionId . "nonexistent"))))))
++                    ;; Names a field that exists but is not a select.
++                    ((type . "object")
++                     (properties
++                      (plain (type . "string") (title . "Plain"))
++                      (stray (type . "string") (title . "Other")
++                             (_meta (_askUserQuestionCustomAnswer
++                                     (questionId . "plain"))))))))
++    (let ((fields (agent-shell-elicitation--parse-schema :requested-schema schema)))
++      (should-not (seq-find (lambda (field) (map-elt field :folded-into)) fields))
++      (should-not (seq-find (lambda (field) (map-elt field :custom-key)) fields)))))
++
++
++;;; Response encoding
++
++(ert-deftest agent-shell-elicitation-encodes-content-for-the-wire-test ()
++  "Booleans, integers and multi-selects serialize the way the schema wants.
++
++Emacs has two spellings to get wrong here: nil is JSON null rather than
++false, and a plain list serializes as an object rather than an array."
++  (should (equal (json-serialize
++                  (agent-shell-elicitation--make-content
++                   ;; `no' is required, which is what keeps an unticked
++                   ;; checkbox on the wire at all.
++                   :fields '(((:key . "yes") (:type . boolean))
++                             ((:key . "no") (:type . boolean) (:required . t))
++                             ((:key . "n") (:type . integer))
++                             ((:key . "x") (:type . number))
++                             ((:key . "tags") (:type . multi-select))
++                             ((:key . "note") (:type . string)))
++                   :values '(("yes" . t) ("no" . :false) ("n" . 1) ("x" . 1.5)
++                             ("tags" . ("a" "b")) ("note" . "hi"))))
++                 "{\"yes\":true,\"no\":false,\"n\":1,\"x\":1.5,\"tags\":[\"a\",\"b\"],\"note\":\"hi\"}"))
++  ;; An integer field never goes out as a float, however the value arrived.
++  (should (equal (json-serialize
++                  (agent-shell-elicitation--make-content
++                   :fields '(((:key . "n") (:type . integer)))
++                   :values '(("n" . 1.0))))
++                 "{\"n\":1}")))
++
++(ert-deftest agent-shell-elicitation-omits-unanswered-fields-test ()
++  "Fields with no value are left out rather than sent as null.
++
++An unsupported field is left out too, since it was never rendered and
++so was never answered."
++  (should (equal (agent-shell-elicitation--make-content
++                  :fields '(((:key . "a") (:type . string))
++                            ((:key . "b") (:type . string))
++                            ((:key . "empty") (:type . string))
++                            ((:key . "none") (:type . multi-select))
++                            ((:key . "gizmo") (:type . unsupported)))
++                  :values '(("a" . "kept") ("empty" . "") ("none" . nil)
++                            ("gizmo" . "ignored")))
++                 '((a . "kept"))))
++  ;; Nothing answered serializes as an empty object, not null.
++  (should (equal (json-serialize
++                  `((content . ,(agent-shell-elicitation--make-content
++                                 :fields '(((:key . "a") (:type . string)))
++                                 :values nil))))
++                 "{\"content\":{}}")))
++
++(ert-deftest agent-shell-elicitation-make-response-shapes-test ()
++  "Accept carries content; decline and cancel carry only their action."
++  (should (equal (agent-shell-elicitation--make-response
++                  :request-id 3 :action 'accept
++                  :fields '(((:key . "a") (:type . string)))
++                  :values '(("a" . "x")))
++                 '((:request-id . 3)
++                   (:result . ((action . "accept") (content . ((a . "x"))))))))
++  (should (equal (agent-shell-elicitation--make-response :request-id 3 :action 'decline)
++                 '((:request-id . 3) (:result . ((action . "decline"))))))
++  (should (equal (agent-shell-elicitation--make-response :request-id 3 :action 'cancel)
++                 '((:request-id . 3) (:result . ((action . "cancel"))))))
++  (should-error (agent-shell-elicitation--make-response :action 'cancel)))
++
++
++;;; Request handling
++
++(ert-deftest agent-shell-elicitation-renders-and-blocks-the-shell-test ()
++  "A form arrives pending, renders its fields, and reports the shell blocked.
++
++Without the blocked status the shell reports `ready' and the prompt
++queue steers a prompt into a turn that is sitting on a question."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5
++                   :schema '((type . "object")
++                             (properties . ((pick . ((type . "string")
++                                                     (title . "Pick")
++                                                     (oneOf . [((const . "a") (title . "Apple"))
++                                                               ((const . "b") (title . "Banana"))]))))))))
++    (should-not sent)
++    (should (eq (map-elt (agent-shell-elicitation--get state 5) :status) 'pending))
++    (should (agent-shell-elicitation--pending-p))
++    (cl-letf (((symbol-function 'shell-maker-busy) (lambda (&rest _) t)))
++      (should (eq (agent-shell-status) 'blocked)))
++    (let ((body (substring-no-properties (car bodies))))
++      (should (string-match-p "Pick one" body))
++      (should (string-match-p "( ) Apple" body))
++      (should (string-match-p "( ) Banana" body))
++      (should (string-match-p "Submit" body))
++      (should (string-match-p "Decline" body)))
++    ;; Tracked as active so out-of-turn gating treats it as in-turn content.
++    (should (seq-find (lambda (request)
++                        (equal (map-elt request :method) "elicitation/create"))
++                      (map-elt state :active-requests)))))
++
++(ert-deftest agent-shell-elicitation-accept-sends-the-answers-test ()
++  "Selecting an option and submitting sends it, then settles the form."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5
++                   :schema '((type . "object")
++                             (properties . ((pick . ((type . "string")
++                                                     (oneOf . [((const . "a") (title . "Apple"))]))))))))
++    (agent-shell-elicitation--set-value state 5 "pick" "a")
++    (should (string-match-p "(\\*) Apple" (substring-no-properties (car bodies))))
++    (agent-shell-elicitation--submit :state state :id 5)
++    (should (equal (seq-first sent)
++                   '((:request-id . 5)
++                     (:result . ((action . "accept") (content . ((pick . "a"))))))))
++    (should (eq (map-elt (agent-shell-elicitation--get state 5) :status) 'answered))
++    (should-not (agent-shell-elicitation--pending-p))
++    ;; Settled rather than deleted: the form stays, showing what was sent.
++    (should (string-match-p "Answered" (substring-no-properties (car bodies))))
++    (should (string-match-p "Apple" (substring-no-properties (car bodies))))
++    (should-not (map-elt state :active-requests))))
++
++(ert-deftest agent-shell-elicitation-decline-sends-decline-test ()
++  "Declining answers the request without any content."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema '((type . "object")
++                                   (properties . ((note . ((type . "string"))))))))
++    (agent-shell-elicitation--respond :state state :id 5 :action 'decline)
++    (should (equal (seq-first sent)
++                   '((:request-id . 5) (:result . ((action . "decline"))))))
++    (should (string-match-p "Declined" (substring-no-properties (car bodies))))))
++
++(ert-deftest agent-shell-elicitation-interrupt-cancels-pending-test ()
++  "Interrupting cancels the form, or the agent waits on an answer forever."
++  (agent-shell-elicitation-tests--with-shell (state sent)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema '((type . "object")
++                                   (properties . ((note . ((type . "string"))))))))
++    (agent-shell-elicitation--cancel-pending :state state)
++    (should (equal (seq-first sent)
++                   '((:request-id . 5) (:result . ((action . "cancel"))))))
++    (should (eq (map-elt (agent-shell-elicitation--get state 5) :status) 'cancelled))
++    (should-not (agent-shell-elicitation--pending-p))))
++
++(ert-deftest agent-shell-elicitation-responds-once-per-request-test ()
++  "A settled form is never answered a second time.
++
++An interrupt racing a submit would otherwise send two responses for one
++JSON-RPC id."
++  (agent-shell-elicitation-tests--with-shell (state sent)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema '((type . "object")
++                                   (properties . ((note . ((type . "string"))))))))
++    (should (agent-shell-elicitation--respond :state state :id 5 :action 'accept))
++    (should-not (agent-shell-elicitation--respond :state state :id 5 :action 'cancel))
++    (should-not (agent-shell-elicitation--cancel-pending :state state))
++    (should (= (length sent) 1))
++    ;; The entry carries one status, not one per attempt.
++    (should (= 1 (seq-count (lambda (pair) (eq (car pair) :status))
++                            (agent-shell-elicitation--get state 5))))))
++
++(ert-deftest agent-shell-elicitation-rejects-unadvertised-mode-test ()
++  "A mode we never advertised is an invalid-params error, not a form.
++
++We advertise `form' only, so `url' is one the agent should not have
++sent; answering it would claim a capability we do not have."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request :id 5 :mode "url"))
++    (should (equal (map-elt (seq-first sent) :request-id) 5))
++    (should (equal (map-nested-elt (seq-first sent) '(:error code)) -32602))
++    (should-not bodies)
++    (should-not (agent-shell-elicitation--get state 5))))
++
++(ert-deftest agent-shell-elicitation-submit-gate-test ()
++  "Submit is gated by required fields, and says which way it is stuck.
++
++A field left empty keeps Submit, which then refuses and names the field,
++rather than sending a response the schema forbids.  A field whose type
++this client cannot render drops Submit altogether, since no answer we
++could send would satisfy the schema; Decline is then the only way out."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    ;; Merely empty: Submit stays, and refuses until the field is filled.
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5
++                   :schema '((type . "object")
++                             (properties . ((note . ((type . "string") (title . "Note")))))
++                             (required . ["note"]))))
++    (should-error (agent-shell-elicitation--submit :state state :id 5) :type 'user-error)
++    (should-not sent)
++    (agent-shell-elicitation--set-value state 5 "note" "filled in")
++    (agent-shell-elicitation--submit :state state :id 5)
++    (should (equal (map-nested-elt (seq-first sent) '(:result content))
++                   '((note . "filled in"))))
++    ;; Unrenderable: Submit is gone, Decline remains, and the form says why.
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 6
++                   :schema '((type . "object")
++                             (properties . ((gizmo . ((type . "gizmo") (title . "Gizmo")))))
++                             (required . ["gizmo"]))))
++    (let ((body (substring-no-properties (car bodies))))
++      (should (string-match-p "Unsupported field type \"gizmo\"" body))
++      (should (string-match-p "Cannot submit" body))
++      (should-not (string-match-p "Submit \\]" body))
++      (should (string-match-p "Decline" body)))
++    (should-error (agent-shell-elicitation--submit :state state :id 6) :type 'user-error)))
++
++(ert-deftest agent-shell-elicitation-skips-question-already-shown-test ()
++  "A question already rendered as the tool call's title is not repeated.
++
++The adapter emits the `tool_call' before the elicitation referencing it,
++so the question is on screen before the form is."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (map-put! state :tool-calls '(("tc-1" . ((:title . "Which approach?")))))
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :tool-call-id "tc-1" :message "Which approach?"
++                   :schema '((type . "object")
++                             (properties . ((note . ((type . "string"))))))))
++    (should-not (string-match-p "Which approach\\?" (substring-no-properties (car bodies))))
++    ;; A question the tool call does not already carry still shows.
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 6 :tool-call-id "tc-1" :message "Something else?"
++                   :schema '((type . "object")
++                             (properties . ((note . ((type . "string"))))))))
++    (should (string-match-p "Something else\\?" (substring-no-properties (car bodies))))))
++
++(ert-deftest agent-shell-elicitation-clear-drops-settled-forms-test ()
++  "Turn end clears forms and their active-request entries alike."
++  (agent-shell-elicitation-tests--with-shell (state sent)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema '((type . "object")
++                                   (properties . ((note . ((type . "string"))))))))
++    (agent-shell-elicitation--clear :state state)
++    (should-not (map-elt state :elicitations))
++    (should-not (map-elt state :active-requests)))
++  ;; A session predating `:elicitations' migrates rather than erroring.
++  (let ((state (list (cons :buffer (current-buffer)))))
++    (agent-shell-elicitation--clear :state state)
++    (should (assq :elicitations state))
++    (should (assq :active-requests state))))
++
++
++;;; Tool calls behind a questionnaire
++
++(defconst agent-shell-elicitation-tests--questionnaire
++  '((questions . [((question . "Which colour?")
++                   (header . "Colour")
++                   (options . [((label . "Red")) ((label . "Blue"))]))]))
++  "A tool call's input when it was bridged from an ask-the-user tool.")
++
++(ert-deftest agent-shell-elicitation-recognises-a-questionnaire-test ()
++  "A questionnaire is told from its input, not from a mark left when asked.
++
++Restore replays notifications but never requests, so the form never
++comes back and nothing marks the tool call.  Reading the shape is what
++makes a restored session render like a live one."
++  (should (agent-shell-elicitation--questionnaire-p
++           agent-shell-elicitation-tests--questionnaire))
++  ;; An ordinary tool's arguments are not a questionnaire.
++  (should-not (agent-shell-elicitation--questionnaire-p '((path . "/tmp/x"))))
++  (should-not (agent-shell-elicitation--questionnaire-p nil))
++  ;; Nor is something merely carrying the key.
++  (should-not (agent-shell-elicitation--questionnaire-p '((questions . []))))
++  (should-not (agent-shell-elicitation--questionnaire-p
++               '((questions . [((header . "no question text"))])))))
++
++(ert-deftest agent-shell-elicitation-tool-call-reads-as-a-question-test ()
++  "A call carrying a questionnaire is labelled a question, not `other'.
++
++Agents bridging an ask-the-user tool give it the catch-all `other'
++kind, which says nothing about what it is."
++  (cl-flet ((kind-label (raw-input)
++              (substring-no-properties
++               (map-elt (agent-shell-make-tool-call-label
++                         (list (cons :tool-calls
++                                     (list (cons "t1" (list (cons :status "completed")
++                                                            (cons :kind "other")
++                                                            (cons :title "Which colour?")
++                                                            (cons :raw-input raw-input))))))
++                         "t1")
++                        :status))))
++    (should (equal (kind-label agent-shell-elicitation-tests--questionnaire) "✓ Question"))
++    (should (equal (kind-label '((path . "/tmp/x"))) "✓ Other"))))
++
++(ert-deftest agent-shell-elicitation-pending-form-owns-the-questions-test ()
++  "A tool call stays quiet while its form is up, and speaks again after.
++
++Both render the same questions, so showing them at once reads as being
++asked twice."
++  (cl-flet ((pending-p (status)
++              (and (agent-shell-elicitation--pending-for-tool-call-p
++                    :state (list (cons :elicitations
++                                       (list (cons 5 (list (cons :status status)
++                                                           (cons :tool-call-id "t1"))))))
++                    :tool-call-id "t1")
++                   t)))
++    (should (pending-p 'pending))
++    (should-not (pending-p 'answered))
++    (should-not (pending-p 'declined))))
++
++(ert-deftest agent-shell-elicitation-settles-into-its-tool-call-test ()
++  "An answered questionnaire leaves its form behind for the tool call.
++
++The call's own content spells the answers out, so the form would only
++repeat what is already there -- and only the tool call survives a
++restore, so letting it be the record keeps both readings identical."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (let (deleted)
++      (cl-letf (((symbol-function 'agent-shell--delete-fragment)
++                 (lambda (&rest args) (push (plist-get args :block-id) deleted))))
++        (map-put! state :tool-calls
++                  (list (cons "t1" (list (cons :raw-input
++                                               agent-shell-elicitation-tests--questionnaire)))))
++        (agent-shell--on-request
++         :state state
++         :acp-request (agent-shell-elicitation-tests--request
++                       :id 5 :tool-call-id "t1"
++                       :schema '((type . "object")
++                                 (properties . ((note . ((type . "string"))))))))
++        (agent-shell-elicitation--respond :state state :id 5 :action 'accept)
++        (should (equal deleted '("elicitation-5")))))))
++
++(ert-deftest agent-shell-elicitation-without-a-questionnaire-keeps-its-form-test ()
++  "An elicitation with no questionnaire behind it stays as its own record.
++
++An MCP server's form is raised by a tool whose input says nothing about
++it, so removing the form would erase the only account of what was asked."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (let (deleted)
++      (cl-letf (((symbol-function 'agent-shell--delete-fragment)
++                 (lambda (&rest args) (push (plist-get args :block-id) deleted))))
++        (map-put! state :tool-calls
++                  (list (cons "t1" (list (cons :raw-input '((path . "/tmp/x")))))))
++        (agent-shell--on-request
++         :state state
++         :acp-request (agent-shell-elicitation-tests--request
++                       :id 5 :tool-call-id "t1"
++                       :schema '((type . "object")
++                                 (properties . ((note . ((type . "string"))))))))
++        (agent-shell-elicitation--set-value state 5 "note" "kept")
++        (agent-shell-elicitation--respond :state state :id 5 :action 'accept)
++        (should-not deleted)
++        (should (string-match-p "Answered" (substring-no-properties (car bodies))))))))
++
++
++;;; Capability
++
++(ert-deftest agent-shell-elicitation-capability-advertises-form-only-test ()
++  "The handshake advertises `form' and stays silent about `url'.
++
++An empty `elicitation' object would mean zero modes, so the `form' key
++has to be there for the capability to say anything at all."
++  (should (equal (json-serialize
++                  (map-nested-elt (agent-shell--make-initialize-request)
++                                  '(:params clientCapabilities elicitation)))
++                 "{\"form\":{}}")))
++
++
++;;; Keys and navigation
++
++(ert-deftest agent-shell-elicitation-numeric-input-is-corrected-not-coerced-test ()
++  "Bad numeric input comes back to be fixed; it is never quietly reshaped.
++
++Each retry is prefilled with the text that was rejected, so a correction
++starts from what was typed -- prefilling the original value again would
++prepend it, turning a 2 corrected to 5 into 25.  An integer field
++refuses a fraction rather than truncating it, since answering 1.9 with 1
++reports a number the user never typed and leaves a plausible-looking
++form behind."
++  ;; An integer field names its requirement whatever is wrong with the
++  ;; input, which reads better than "not a number" for `2 apples\='.
++  (dolist (case '((integer ("1.9" "2 apples" "2") 2
++                   ("N: " "Whole number needed.  N: " "Whole number needed.  N: "))
++                  (number ("1.9") 1.9 ("N: "))
++                  (number ("nope" ".5") 0.5 ("N: " "Not a number.  N: "))))
++    (let ((reads (nth 1 case))
++          (prompts nil)
++          (prefills nil))
++      (cl-letf (((symbol-function 'agent-shell-elicitation--read-string)
++                 (lambda (prompt initial)
++                   (push prompt prompts)
++                   (push initial prefills)
++                   (pop reads))))
++        (should (equal (agent-shell-elicitation--read-value
++                        :field `((:key . "n") (:title . "N") (:type . ,(nth 0 case))))
++                       (nth 2 case)))
++        (should (equal (nreverse prompts) (nth 3 case)))
++        ;; Nothing to start from, then whatever each retry rejected.
++        (should (equal (nreverse prefills)
++                       (cons nil (butlast (nth 1 case)))))))))
++
++(ert-deftest agent-shell-elicitation-arms-and-cancels-the-idle-timer-test ()
++  "A pending form arms the idle notification, and answering cancels it.
++
++An unanswered form blocks the turn exactly as an unanswered permission
++does, so subscribers watching for `idle' must hear about it."
++  (agent-shell-elicitation-tests--with-shell (state sent)
++    (let (armed cancelled)
++      (cl-letf (((symbol-function 'agent-shell--start-idle-timer)
++                 (lambda (&rest args) (setq armed args)))
++                ((symbol-function 'agent-shell--cancel-idle-timer)
++                 (lambda () (setq cancelled t))))
++        (agent-shell--on-request
++         :state state
++         :acp-request (agent-shell-elicitation-tests--request
++                       :id 5 :schema '((type . "object")
++                                       (properties . ((note . ((type . "string"))))))))
++        (should (equal (plist-get armed :event) 'elicitation-request))
++        (should (equal (map-elt (plist-get armed :data) :request-id) 5))
++        (should-not cancelled)
++        (agent-shell-elicitation--respond :state state :id 5 :action 'decline)
++        (should cancelled)))))
++
++(ert-deftest agent-shell-elicitation-keys-drive-the-whole-form-test ()
++  "Pressing RET on each control does what the control says.
++
++Driven through `execute-kbd-macro\=' rather than by calling the commands,
++so a control whose action reaches no branch of
++`agent-shell-elicitation-act\=' shows up as the silent no-op it is.
++
++The buffer is displayed rather than temporary: key dispatch goes
++through the selected window, so keys pressed at a buffer nobody is
++showing resolve against something else entirely."
++  (let ((buffer (generate-new-buffer "*agent-shell-elicitation-keys-test*"))
++        (sent nil))
++    (unwind-protect
++        (progn
++          (switch-to-buffer buffer)
++          (let ((state (list (cons :buffer buffer)
++                             (cons :client 'test-client)
++                             (cons :tool-calls nil)
++                             (cons :elicitations nil)
++                             (cons :active-requests nil)
++                             (cons :event-subscriptions nil)
++                             (cons :idle-timer nil)
++                             (cons :last-entry-type nil))))
++            (cl-letf (((symbol-function 'agent-shell--state)
++                       (lambda () state))
++                      ((symbol-function 'agent-shell--update-fragment)
++                       ;; Render for real, so point sits on live text.
++                       (lambda (&rest args)
++                         (let ((inhibit-read-only t))
++                           (erase-buffer)
++                           (insert (plist-get args :body)))))
++                      ((symbol-function 'agent-shell-viewport--buffer)
++                       (lambda (&rest _) nil))
++                      ((symbol-function 'agent-shell--append-transcript)
++                       (lambda (&rest _)))
++                      ((symbol-function 'acp-send-response)
++                       (lambda (&rest args) (push (plist-get args :response) sent))))
++              (agent-shell--on-request
++               :state state
++               :acp-request (agent-shell-elicitation-tests--request
++                             :id 5 :schema agent-shell-elicitation-tests--ask-schema))
++              (cl-flet ((press-on (action keys)
++                          (goto-char (point-min))
++                          (let ((match (text-property-search-forward
++                                        'agent-shell-elicitation-control action
++                                        (lambda (wanted control)
++                                          (eq (map-elt control :action) wanted)))))
++                            (should match)
++                            (goto-char (prop-match-beginning match)))
++                          (execute-kbd-macro keys)))
++                ;; RET on an option picks it.
++                (press-on 'select (kbd "RET"))
++                (should (equal (map-elt (agent-shell-elicitation--get state 5) :values)
++                               '(("question_0" . "Red"))))
++                ;; RET on the free-text answer opens the minibuffer; what
++                ;; follows in the macro is what gets typed into it.  The
++                ;; pick it replaces goes.
++                (press-on 'custom (vconcat (kbd "RET") (string-to-vector "teal") (kbd "RET")))
++                (should (equal (map-elt (agent-shell-elicitation--get state 5) :values)
++                               '(("question_0_custom" . "teal"))))
++                ;; RET on Submit sends exactly the typed answer.
++                (press-on 'submit (kbd "RET"))
++                (should (equal (map-nested-elt (seq-first sent) '(:result content))
++                               '((question_0_custom . "teal"))))))))
++      (kill-buffer buffer))))
++
++(ert-deftest agent-shell-elicitation-keys-reach-controls-only-test ()
++  "The form keys sit on its controls, leaving the rest of the buffer alone.
++
++A `keymap' text property over a wide region has shadowed
++`agent-shell-mode-map' before, so assert on `key-binding' at a position
++rather than driving keys."
++  (with-temp-buffer
++    (insert (agent-shell-elicitation--make-control
++             :text "(*) Apple" :id 1 :key "pick" :value "a" :action 'select))
++    (insert "plain")
++    (goto-char (point-min))
++    (should (eq #'agent-shell-elicitation-act (key-binding (kbd "RET"))))
++    (should (eq #'ignore (key-binding [?x])))
++    ;; Off the control nothing is shadowed.  Here RET is `newline'; in a
++    ;; shell buffer it submits the prompt.
++    (goto-char (point-max))
++    (should (eq #'newline (key-binding (kbd "RET"))))
++    (should (eq #'self-insert-command (key-binding [?x])))))
++
++(ert-deftest agent-shell-elicitation-navigation-walks-controls-test ()
++  "Navigation stops once per control, at its first character.
++
++Point lands on the marker rather than mid-label, so a screen reader
++reads the whole option from its start."
++  (with-temp-buffer
++    (dolist (option '("a" "b"))
++      (insert "  ")
++      (insert (agent-shell-elicitation--make-control
++               :text (format "( ) %s" option)
++               :id 1 :key "pick" :value option :action 'select))
++      (insert "\n"))
++    (goto-char (point-min))
++    (should (equal (char-after (agent-shell-elicitation-next-field)) ?\())
++    (should (equal (char-after (agent-shell-elicitation-next-field)) ?\())
++    (should-not (agent-shell-elicitation-next-field))
++    (should (agent-shell-elicitation-previous-field))
++    (should-not (agent-shell-elicitation-previous-field))))
++
++(ert-deftest agent-shell-elicitation-jump-lands-at-the-top-of-the-form-test ()
++  "A form arriving puts point on its question, with the rest forward.
++
++Landing on a control would leave the question and the field headings
++above point, and those are not navigable, so TAB would never reach
++them and a keyboard user would have to walk back up by line."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :message "Which approach should I take?"
++                   :schema '((type . "object")
++                             (properties . ((approach . ((type . "string")
++                                                         (title . "Approach")
++                                                         (enum . ["Refactor first" "Add first"])))))
++                             (required . ["approach"]))))
++    (with-temp-buffer
++      (insert "earlier transcript content\n\n")
++      (insert (car bodies))
++      (goto-char (point-max))
++      (should (agent-shell-elicitation-jump-to-latest-form))
++      (should (equal (buffer-substring-no-properties
++                      (line-beginning-position) (line-end-position))
++                     "    Which approach should I take?"))
++      ;; Everything the form offers is forward of point.
++      (should (agent-shell-elicitation-next-field))
++      (should (equal (buffer-substring-no-properties
++                      (point) (line-end-position))
++                     "( ) Refactor first"))))
++
++  ;; With no message of its own, the form lands on its first heading
++  ;; instead -- a questionnaire whose question is already the tool
++  ;; call's title sends none.
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 6 :message nil
++                   :schema '((type . "object")
++                             (properties . ((approach . ((type . "string")
++                                                         (title . "Approach")
++                                                         (enum . ["Refactor first"]))))))))
++    (with-temp-buffer
++      (insert (car bodies))
++      (goto-char (point-max))
++      (should (agent-shell-elicitation-jump-to-latest-form))
++      (should (equal (buffer-substring-no-properties
++                      (line-beginning-position) (line-end-position))
++                     "    Approach")))))
++
++(ert-deftest agent-shell-elicitation-goto-control-survives-rerender-test ()
++  "Point returns to the control just acted on after the body is replaced.
++
++Controls carry identity only -- which elicitation, field and option --
++so the same control still matches once its value has changed."
++  (let ((control (list (cons :id 1) (cons :key "pick")
++                       (cons :value "b") (cons :action 'select))))
++    (with-temp-buffer
++      (insert "preamble\n")
++      (dolist (option '("a" "b"))
++        (insert (agent-shell-elicitation--make-control
++                 ;; Rendered selected this time, as a re-render would.
++                 :text (format "(*) %s" option)
++                 :id 1 :key "pick" :value option :action 'select))
++        (insert "\n"))
++      (goto-char (point-min))
++      (should (agent-shell-elicitation--goto-control control))
++      (should (equal (buffer-substring-no-properties (point) (+ (point) 5)) "(*) b"))
++      ;; A control that is gone (a settled form) leaves point alone.
++      (should-not (agent-shell-elicitation--goto-control
++                   (map-insert control :value "gone"))))))
++
++(provide 'agent-shell-elicitation-tests)
++
++;;; agent-shell-elicitation-tests.el ends here
+diff --git a/tests/claude-ask-user-question.traffic b/tests/claude-ask-user-question.traffic
+new file mode 100644
+index 00000000..89062dd9
+--- /dev/null
++++ b/tests/claude-ask-user-question.traffic
+@@ -0,0 +1,144 @@
++(((:direction . outgoing) (:kind . request)
++  (:object (jsonrpc . #2="2.0") (method . "initialize") (id . 1)
++	   (params
++	    (clientInfo (name . "agent-shell")
++			(title . "Emacs Agent Shell")
++			(version . "0.74.2"))
++	    (protocolVersion . 1)
++	    (clientCapabilities
++	     (fs (readTextFile . t) (writeTextFile . t))
++	     (elicitation (form))))))
++ ((:direction . incoming) (:kind . response)
++  (:object (jsonrpc . "2.0") (id . 1)
++	   (result (protocolVersion . 1)
++		   (agentCapabilities
++		    (_meta (claudeCode (promptQueueing . t)))
++		    (promptCapabilities (image . t)
++					(embeddedContext . t))
++		    (mcpCapabilities (http . t) (sse . t))
++		    (auth (logout)) (providers) (loadSession . t)
++		    (sessionCapabilities (additionalDirectories)
++					 (close) (delete) (fork)
++					 (list) (resume)))
++		   (agentInfo
++		    (name . "@agentclientprotocol/claude-agent-acp")
++		    (title . "Claude Agent") (version . "0.70.0"))
++		   (authMethods . #1=[])
++		   (_meta
++		    (jetbrains
++		     (air (version . 1)
++			  (capabilities
++			   . ["sessionFailure" "agentFileChangeReport"])))
++		    (steering (supported . t))
++		    (goal (version . 1)
++			  (controlMethod . "_session/goal")
++			  (actions . ["set" "clear"]))))))
++ ((:direction . incoming) (:kind . notification)
++  (:object (jsonrpc . "2.0") (method . "session/update")
++	   (params
++	    (sessionId . "866901fc-f565-4ff7-b3c8-b6c3905fb293")
++	    (update
++	     (_meta (claudeCode (toolName . "AskUserQuestion")))
++	     (toolCallId . "toolu_018EPi8fBMWmYGL3cfag3v9c")
++	     (sessionUpdate . "tool_call") (rawInput)
++	     (status . "pending") (title . "Asking for your input")
++	     (kind . "other") (content . #1#)))))
++ ((:direction . incoming) (:kind . notification)
++  (:object (jsonrpc . "2.0") (method . "session/update")
++	   (params
++	    (sessionId . "866901fc-f565-4ff7-b3c8-b6c3905fb293")
++	    (update
++	     (_meta (claudeCode (toolName . "AskUserQuestion")))
++	     (toolCallId . "toolu_018EPi8fBMWmYGL3cfag3v9c")
++	     (sessionUpdate . "tool_call_update")
++	     (rawInput
++	      (questions
++	       . [((question
++		    . "Which colour do you prefer, red or blue?")
++		   (header . "Colour")
++		   (options
++		    . [((label . "Red")
++			(description . "You prefer red."))
++		       ((label . "Blue")
++			(description . "You prefer blue."))])
++		   (multiSelect))]))
++	     (title . "Which colour do you prefer, red or blue?")
++	     (kind . "other")
++	     (content
++	      . [((type . "content")
++		  (content (type . "text")
++			   (text
++			    . "Which colour do you prefer, red or blue?")))])))))
++ ((:direction . incoming) (:kind . request)
++  (:object (jsonrpc . "2.0") (id . 0) (method . "elicitation/create")
++	   (params (mode . "form")
++		   (sessionId . "866901fc-f565-4ff7-b3c8-b6c3905fb293")
++		   (toolCallId . "toolu_018EPi8fBMWmYGL3cfag3v9c")
++		   (message
++		    . "Which colour do you prefer, red or blue?")
++		   (requestedSchema (type . "object")
++				    (properties
++				     (question_0 (type . "string")
++						 (title . "Colour")
++						 (oneOf
++						  . [((const . #3=
++							     "Red")
++						      (title . "Red")
++						      (description
++						       . "You prefer red."))
++						     ((const . "Blue")
++						      (title . "Blue")
++						      (description
++						       . "You prefer blue."))]))
++				     (question_0_custom
++				      (type . "string")
++				      (title . "Other")
++				      (description
++				       . "Type your own answer instead of choosing an option above (optional).")
++				      (_meta
++				       (_askUserQuestionCustomAnswer
++					(questionId . "question_0")
++					(isCustomAnswer . t)))))))))
++ ((:direction . outgoing) (:kind . response)
++  (:object (jsonrpc . #2#) (id . 0)
++	   (result (action . "accept") (content (question_0 . #3#)))))
++ ((:direction . incoming) (:kind . notification)
++  (:object (jsonrpc . "2.0") (method . "session/update")
++	   (params
++	    (sessionId . "866901fc-f565-4ff7-b3c8-b6c3905fb293")
++	    (update
++	     (_meta
++	      (claudeCode
++	       (toolResponse
++		(questions
++		 . [((question
++		      . "Which colour do you prefer, red or blue?")
++		     (header . "Colour")
++		     (options
++		      . [((label . "Red")
++			  (description . "You prefer red."))
++			 ((label . "Blue")
++			  (description . "You prefer blue."))])
++		     (multiSelect))])
++		(answers
++		 (Which\ colour\ do\ you\ prefer\,\ red\ or\ blue?
++		  . "Red")))
++	       (toolName . "AskUserQuestion")))
++	     (toolCallId . "toolu_018EPi8fBMWmYGL3cfag3v9c")
++	     (sessionUpdate . "tool_call_update")))))
++ ((:direction . incoming) (:kind . notification)
++  (:object (jsonrpc . "2.0") (method . "session/update")
++	   (params
++	    (sessionId . "866901fc-f565-4ff7-b3c8-b6c3905fb293")
++	    (update
++	     (_meta (claudeCode (toolName . "AskUserQuestion")))
++	     (toolCallId . "toolu_018EPi8fBMWmYGL3cfag3v9c")
++	     (sessionUpdate . "tool_call_update")
++	     (status . "completed")
++	     (rawOutput
++	      . "Your questions have been answered: \"Which colour do you prefer, red or blue?\"=\"Red\". You can now continue with these answers in mind.")
++	     (content
++	      . [((type . "content")
++		  (content (type . "text")
++			   (text
++			    . "Your questions have been answered: \"Which colour do you prefer, red or blue?\"=\"Red\". You can now continue with these answers in mind.")))]))))))
+
+From 1d62cd10d1b934b3018b5299f2072827a2df327e Mon Sep 17 00:00:00 2001
+From: Oleksii Sadovyi <lex.sadovyi@gmail.com>
+Date: Sat, 22 Aug 2026 23:57:22 +0200
+Subject: [PATCH 3/4] Leave a fragment body's own help-echo alone
+
+A fragment tags itself with its qualified-id for debugging, and adds
+nothing when that is off.  Nothing was what it failed to do: the tag
+went on through `add-text-properties' either way, so with debugging off
+it set `help-echo' to nil across the region rather than skipping it,
+erasing any help the content there carried.
+
+No body carried any until now, which is why it never showed.  A body
+holds arbitrary rendered content, and `display-local-help' is the way
+to read the help that content offers, so the property has to survive.
+
+Debugging on still covers the body with the id, since surfacing
+qualified-ids is what that mode is for.
+---
+ agent-shell-ui.el             | 51 +++++++++++++++++++++--------------
+ tests/agent-shell-ui-tests.el | 25 +++++++++++++++++
+ 2 files changed, 56 insertions(+), 20 deletions(-)
+
+diff --git a/agent-shell-ui.el b/agent-shell-ui.el
+index 385d6cd6..34b76ea3 100644
+--- a/agent-shell-ui.el
++++ b/agent-shell-ui.el
+@@ -101,6 +101,17 @@ otherwise nil so the id stays hidden from users."
+   (when agent-shell-ui-debug-enabled
+     qualified-id))
+ 
++(defun agent-shell-ui--fragment-help-echo-properties (qualified-id)
++  "Return `help-echo' properties tagging QUALIFIED-ID, or nil to add none.
++
++Applied across a region, a nil `help-echo' does not merely fail to tag
++it: `add-text-properties' sets the property to nil, erasing whatever
++help the region's own content carried.  A body holds arbitrary rendered
++content, which may carry help of its own, so adding no property at all
++is what leaves it in place."
++  (when-let* ((help (agent-shell-ui--fragment-help-echo qualified-id)))
++    (list 'help-echo help)))
++
+ (cl-defun agent-shell-ui-make-fragment-model (&key (namespace-id "global") (block-id "1") label-left label-right body group-id group-label (group-expanded t))
+   "Create a fragment model alist.
+ NAMESPACE-ID, BLOCK-ID, LABEL-LEFT, LABEL-RIGHT, and BODY are the keys.
+@@ -440,10 +451,10 @@ match.  Explicit `invisible' assignment overrides any value the
+ new chars might have inherited via rear-stickiness from preceding
+ trailing-whitespace chars."
+   (add-text-properties start end
+-                       `(agent-shell-ui-section body
+-                                                help-echo ,(agent-shell-ui--fragment-help-echo qualified-id)
+-                                                read-only t
+-                                                front-sticky (read-only)))
++                       (append (list 'agent-shell-ui-section 'body
++                                     'read-only t
++                                     'front-sticky '(read-only))
++                               (agent-shell-ui--fragment-help-echo-properties qualified-id)))
+   (when state
+     (put-text-property start end 'agent-shell-ui-state state))
+   (put-text-property start end 'invisible (if body-invisible t nil)))
+@@ -638,10 +649,10 @@ be handed in."
+                    :hint "toggle"))
+           (let ((insert-end (point)))
+             (add-text-properties insert-start insert-end
+-                                 `(agent-shell-ui-section ,section
+-                                                          help-echo ,(agent-shell-ui--fragment-help-echo qualified-id)
+-                                                          read-only t
+-                                                          front-sticky (read-only)))
++                                 (append (list 'agent-shell-ui-section section
++                                               'read-only t
++                                               'front-sticky '(read-only))
++                                         (agent-shell-ui--fragment-help-echo-properties qualified-id)))
+             (when state
+               (put-text-property insert-start insert-end
+                                  'agent-shell-ui-state state))))))))
+@@ -1108,10 +1119,10 @@ indents a child's header line under its group header."
+                :hint "toggle"))
+       (setq label-left-end (point))
+       (add-text-properties label-left-start label-left-end
+-                           `(agent-shell-ui-section label-left
+-                                                    help-echo ,(agent-shell-ui--fragment-help-echo qualified-id)
+-                                                    read-only t
+-                                                    front-sticky (read-only)))
++                           (append (list 'agent-shell-ui-section 'label-left
++                                         'read-only t
++                                         'front-sticky '(read-only))
++                                   (agent-shell-ui--fragment-help-echo-properties qualified-id)))
+       (setq need-space t))
+ 
+     (when label-right
+@@ -1123,10 +1134,10 @@ indents a child's header line under its group header."
+                :hint "toggle"))
+       (setq label-right-end (point))
+       (add-text-properties label-right-start label-right-end
+-                           `(agent-shell-ui-section label-right
+-                                                    help-echo ,(agent-shell-ui--fragment-help-echo qualified-id)
+-                                                    read-only t
+-                                                    front-sticky (read-only))))
++                           (append (list 'agent-shell-ui-section 'label-right
++                                         'read-only t
++                                         'front-sticky '(read-only))
++                                   (agent-shell-ui--fragment-help-echo-properties qualified-id))))
+ 
+     (when body
+       (when (or label-left label-right)
+@@ -1143,10 +1154,10 @@ indents a child's header line under its group header."
+         (insert (agent-shell-ui--indent-text clean-body body-indent)))
+       (setq body-end (point))
+       (add-text-properties body-start body-end
+-                           `(agent-shell-ui-section body
+-                                                    help-echo ,(agent-shell-ui--fragment-help-echo qualified-id)
+-                                                    read-only t
+-                                                    front-sticky (read-only))))
++                           (append (list 'agent-shell-ui-section 'body
++                                         'read-only t
++                                         'front-sticky '(read-only))
++                                   (agent-shell-ui--fragment-help-echo-properties qualified-id))))
+     ;; Indent a group child's header line under its group header.  The
+     ;; body already carries its own (deeper) `line-prefix' from above.
+     ;; A child with neither label has no header line to indent (the
+diff --git a/tests/agent-shell-ui-tests.el b/tests/agent-shell-ui-tests.el
+index fd3d43cc..7b35c06e 100644
+--- a/tests/agent-shell-ui-tests.el
++++ b/tests/agent-shell-ui-tests.el
+@@ -991,6 +991,31 @@ fragment."
+       (agent-shell-ui--echo-action-hint "act on this" #'ignore map)
+       (should (equal "Press C-c C-e to act on this" echoed)))))
+ 
++(ert-deftest agent-shell-ui-body-keeps-its-own-help-echo-test ()
++  "A fragment leaves the help its body carried alone.
++
++Adding a nil `help-echo' across the body does not merely fail to tag it,
++it erases whatever help the body's own content came with, which
++`display-local-help' would otherwise read out.  With debugging on the
++tag does cover the body, since that mode exists to surface
++qualified-ids."
++  (cl-flet ((body-help (debugging)
++              (with-temp-buffer
++                (agent-shell-ui-mode 1)
++                (let ((inhibit-read-only t)
++                      (agent-shell-ui-debug-enabled debugging))
++                  (agent-shell-ui-update-fragment
++                   (agent-shell-ui-make-fragment-model
++                    :namespace-id "ns" :block-id "1" :label-left "run"
++                    :body (concat (propertize "described" 'help-echo "the content's own help")
++                                  " plain\n"))
++                   :expanded t :navigation 'always))
++                (goto-char (point-min))
++                (should (search-forward "described" nil t))
++                (get-text-property (match-beginning 0) 'help-echo))))
++    (should (equal (body-help nil) "the content's own help"))
++    (should (equal (body-help t) "ns-1"))))
++
+ (ert-deftest agent-shell-ui-keys-reach-fragment-chrome-only-test ()
+   "The fold keys sit on the chrome, leaving the rest of the buffer alone.
+ 
+
+From 3465729d520151aeef256b8124aba3dd73ab7e84 Mon Sep 17 00:00:00 2001
+From: Oleksii Sadovyi <lex.sadovyi@gmail.com>
+Date: Sun, 23 Aug 2026 00:01:27 +0200
+Subject: [PATCH 4/4] Open an option's preview from the option itself
+
+An agent may attach a preview to an answer -- a mockup, a snippet, the
+shape of what picking it would do -- so the user can see what they are
+choosing before they choose it. Ignoring it left that unreachable.
+
+The preview hangs off the option rather than becoming a control of its
+own. A disclosure glyph, the same one every fold in the buffer uses,
+marks an answer that has one; the glyph acts but is not navigable, so a
+question offering a preview is still a single TAB stop rather than two.
+
+Opening it is bound on the option as well as on the glyph, since
+`end-of-line' lands after the glyph rather than on it, and RET past the
+end of a line should go on meaning what it means everywhere else. The
+preview is also offered as `help-echo', which `display-local-help' reads
+out without opening anything, so it costs no keybinding of ours.
+
+Which previews are open is kept in the elicitation beside the field
+values, not in the rendered text, since the form is drawn into both the
+shell buffer and the viewport and text-local state would exist there in
+two copies that could disagree.
+
+The `_meta' key carrying a preview is namespaced to the agent that
+sends it, unlike the free-text companion marker which is deliberately
+un-namespaced for use across agents. Previews are therefore Claude's
+alone today; an option without one renders as it did before.
+---
+ agent-shell-elicitation.el             | 198 +++++++++++++++++++++++--
+ tests/agent-shell-elicitation-tests.el | 105 +++++++++++++
+ 2 files changed, 287 insertions(+), 16 deletions(-)
+
+diff --git a/agent-shell-elicitation.el b/agent-shell-elicitation.el
+index 8e4e57b3..fb6b105a 100644
+--- a/agent-shell-elicitation.el
++++ b/agent-shell-elicitation.el
+@@ -170,9 +170,33 @@ For example:
+              (list (cons :value (map-elt option 'const))
+                    (cons :title (or (map-elt option 'title)
+                                     (map-elt option 'const)))
+-                   (cons :description (map-elt option 'description))))
++                   (cons :description (map-elt option 'description))
++                   (cons :preview (agent-shell-elicitation--option-preview option))))
+            (append options nil)))
+ 
++(defconst agent-shell-elicitation--option-meta-key '_claude/askUserQuestionOption
++  "`_meta\=' key an option's preview travels under.
++
++Unlike the free-text companion marker, this one is namespaced to the
++agent that sends it, so only Claude sends a preview today.  An option
++without it renders without a preview to open.")
++
++(defun agent-shell-elicitation--option-preview (option)
++  "Return OPTION's preview text, or nil when there is none.
++
++A preview is the longer form of an answer -- a mockup, a snippet, an
++outline of what picking it would do -- that an agent attaches for the
++client to show on demand.
++
++For example:
++
++  (agent-shell-elicitation--option-preview
++   \='((const . \"a\") (_meta (_claude/askUserQuestionOption (preview . \"…\")))))
++  => \"…\""
++  (map-nested-elt option (list '_meta
++                               agent-shell-elicitation--option-meta-key
++                               'preview)))
++
+ (defun agent-shell-elicitation--field-options (schema)
+   "Return SCHEMA's selectable options, or nil when it has none.
+ 
+@@ -538,6 +562,15 @@ answer, so there is nothing left to look up."
+                           (equal (map-elt request :method) "elicitation/create"))
+                         (map-elt state :active-requests))))
+ 
++(defun agent-shell-elicitation--preview-open-p (elicitation key value)
++  "Return non-nil when the preview for KEY's VALUE option is open in ELICITATION.
++
++Kept in the elicitation rather than in the rendered text for the same
++reason field values are: the form is drawn into the shell buffer and the
++viewport buffer both, so text-local state would exist in two copies that
++could disagree."
++  (member (cons key value) (map-elt elicitation :previews)))
++
+ (defun agent-shell-elicitation--field (elicitation key)
+   "Return ELICITATION's field named KEY, or nil when it has none."
+   (seq-find (lambda (field) (equal (map-elt field :key) key))
+@@ -596,25 +629,58 @@ is read-only.
+ Rebind with `define-key' rather than `setq': already rendered forms hold
+ on to this keymap object.")
+ 
++(defvar agent-shell-elicitation-preview-map
++  (let ((map (make-sparse-keymap)))
++    (set-keymap-parent map agent-shell-elicitation-map)
++    (define-key map (kbd "?") #'agent-shell-elicitation-toggle-preview)
++    map)
++  "Keymap active on a control whose answer carries a preview.
++
++Everything `agent-shell-elicitation-map' binds, plus \\`?' to open the
++preview.  Applied only where there is one to open, so on every other
++control \\`?' is left to whatever the buffer already binds it to -- the
++viewport, for one, opens its help menu with it.
++
++Only \\`?' lives here; RET and the rest are looked up in the parent, so
++rebinding them there still reaches these controls.  That is what
++`agent-shell--make-button' cannot do (see
++`agent-shell-elicitation--box'): it binds RET in the child itself, where
++it shadows the parent.
++
++Rebind with `define-key' rather than `setq': already rendered forms hold
++on to this keymap object.")
++
+ (defconst agent-shell-elicitation--indent "    "
+   "Indentation shared by every line of a rendered form.")
+ 
+ (defconst agent-shell-elicitation--empty-value "(empty)"
+   "Placeholder shown in place of a text field with no value yet.")
+ 
+-(cl-defun agent-shell-elicitation--make-control (&key text id key value action hint)
++(cl-defun agent-shell-elicitation--make-control (&key text id key value action hint help
++                                                     (navigable t)
++                                                     (keymap agent-shell-elicitation-map))
+   "Return TEXT propertized as an elicitation control.
+ 
+ ID identifies the elicitation, KEY the field within it and VALUE the
+ option within that field, so `agent-shell-elicitation-act' can look the
+ authoritative entry up rather than close over it.  ACTION names what
+ invoking the control does: `select', `toggle', `read', `custom',
+-`submit' or `decline'.  HINT is a verb echoed when the cursor enters
++`preview', `submit' or `decline'.  HINT is a verb echoed when the cursor enters
+ TEXT.
+ 
++HELP is offered as `help-echo', which `display-local-help' reads out, so
++a preview can be read with \\[display-local-help] without expanding it.
++
+ The first character carries `agent-shell-elicitation-navigable', which
+ is what TAB stops on, putting point at the start of the control where a
+-screen reader reads the whole line from."
++screen reader reads the whole line from.  Pass NAVIGABLE nil for chrome
++that acts but should not be a stop of its own, so a question with a
++preview to open still takes one TAB rather than two.
++
++KEYMAP is applied as the `keymap' property and defaults to
++`agent-shell-elicitation-map'.  Pass
++`agent-shell-elicitation-preview-map' for a control that has a preview,
++which is the only place \\`?' should be taken over."
+   (let ((control (apply #'agent-shell--add-text-properties
+                         text
+                         (append
+@@ -623,17 +689,20 @@ screen reader reads the whole line from."
+                                      (cons :key key)
+                                      (cons :value value)
+                                      (cons :action action))
+-                               'keymap agent-shell-elicitation-map
++                               'keymap keymap
+                                'pointer 'hand
+                                'rear-nonsticky t)
++                         (when help
++                           (list 'help-echo help))
+                          (when hint
+                            (list 'cursor-sensor-functions
+                                  (list (lambda (_window _old-pos sensor-action)
+                                          (when (eq sensor-action 'entered)
+                                            (agent-shell-ui--echo-action-hint
+                                             hint #'agent-shell-elicitation-act
+-                                            agent-shell-elicitation-map))))))))))
+-    (put-text-property 0 1 'agent-shell-elicitation-navigable t control)
++                                            keymap))))))))))
++    (when navigable
++      (put-text-property 0 1 'agent-shell-elicitation-navigable t control))
+     control))
+ 
+ (defun agent-shell-elicitation--box (text)
+@@ -697,12 +766,19 @@ Checkboxes for a multi-select, radio buttons otherwise."
+         (t "( )")))
+ 
+ (cl-defun agent-shell-elicitation--make-option-line (&key id field value title description
+-                                                         action multi selected)
++                                                         action multi selected preview
++                                                         preview-open)
+   "Return one marked option line of FIELD in elicitation ID.
+ 
+ TITLE and DESCRIPTION label it, VALUE identifies which option it is (nil
+ for the free-text companion, which has no option value of its own),
+-ACTION is what invoking it does, and MULTI and SELECTED pick the marker."
++ACTION is what invoking it does, and MULTI and SELECTED pick the marker.
++
++PREVIEW is the longer form of the answer, when the agent sent one.  It
++hangs off this option rather than becoming a control of its own: the
++disclosure glyph opens it, so the option is still a single TAB stop, and
++`display-local-help' reads the preview out without opening it.
++PREVIEW-OPEN says whether it is currently open."
+   (concat
+    agent-shell-elicitation--indent
+    (agent-shell-elicitation--make-control
+@@ -711,14 +787,38 @@ ACTION is what invoking it does, and MULTI and SELECTED pick the marker."
+     :key (map-elt field :key)
+     :value value
+     :action action
++    :help preview
++    :keymap (if preview
++                agent-shell-elicitation-preview-map
++              agent-shell-elicitation-map)
+     :hint (pcase action
+             ('custom "type your own answer")
+             ('toggle "toggle this option")
+             (_ "pick this option")))
++   (when preview
++     ;; The same glyph every fold in the buffer uses, and no navigable
++     ;; property, so TAB passes over it to the next option.
++     (concat " " (agent-shell-elicitation--make-control
++                  :text (if preview-open "▼" "▶")
++                  :id id :key (map-elt field :key) :value value
++                  :action 'preview :navigable nil
++                  :help preview
++                  :keymap agent-shell-elicitation-preview-map
++                  :hint (if preview-open "hide this preview" "show this preview"))))
+    (when description
+-     (format "\n%s    %s" agent-shell-elicitation--indent description))))
+-
+-(cl-defun agent-shell-elicitation--make-select-lines (&key id field value multi custom custom-value)
++     (format "\n%s    %s" agent-shell-elicitation--indent description))
++   (when (and preview preview-open)
++     (concat "\n" (agent-shell-elicitation--indent-block preview)))))
++
++(defun agent-shell-elicitation--indent-block (text)
++  "Return TEXT with every line indented to sit under an option."
++  (mapconcat (lambda (line)
++               (concat agent-shell-elicitation--indent "    " line))
++             (split-string text "\n")
++             "\n"))
++
++(cl-defun agent-shell-elicitation--make-select-lines (&key id field value multi custom custom-value
++                                                          elicitation)
+   "Return FIELD's option lines for elicitation ID given its current VALUE.
+ 
+ With MULTI, options are checkboxes toggled independently and VALUE is a
+@@ -739,7 +839,10 @@ for that option the answer is the option."
+                :multi multi
+                :selected (if multi
+                              (and (member (map-elt option :value) value) t)
+-                           (equal (map-elt option :value) value))))
++                           (equal (map-elt option :value) value))
++               :preview (map-elt option :preview)
++               :preview-open (agent-shell-elicitation--preview-open-p
++                              elicitation (map-elt field :key) (map-elt option :value))))
+             (map-elt field :options))
+    (when custom
+      (list (agent-shell-elicitation--make-option-line
+@@ -754,7 +857,8 @@ for that option the answer is the option."
+             :multi multi
+             :selected (and custom-value t))))))
+ 
+-(cl-defun agent-shell-elicitation--make-field-text (&key id field value custom custom-value)
++(cl-defun agent-shell-elicitation--make-field-text (&key id field value custom custom-value
++                                                        elicitation)
+   "Return FIELD's rendered lines for elicitation ID given its current VALUE.
+ 
+ Selects render as a heading, an optional description, then one marked
+@@ -784,7 +888,8 @@ For example, a single-select renders as:
+                       (agent-shell-elicitation--make-select-lines
+                        :id id :field field :value value
+                        :multi (eq (map-elt field :type) 'multi-select)
+-                       :custom custom :custom-value custom-value)))
++                       :custom custom :custom-value custom-value
++                       :elicitation elicitation)))
+              ('boolean
+               (list (concat agent-shell-elicitation--indent
+                             (agent-shell-elicitation--make-control
+@@ -916,7 +1021,8 @@ so walking both would render one question twice."
+               :custom (agent-shell-elicitation--field
+                        elicitation (map-elt field :custom-key))
+               :custom-value (map-nested-elt
+-                             elicitation (list :values (map-elt field :custom-key)))))
++                             elicitation (list :values (map-elt field :custom-key)))
++              :elicitation elicitation))
+            (agent-shell-elicitation--answerable (map-elt elicitation :fields))))
+ 
+ (defun agent-shell-elicitation--mark-form-start (text)
+@@ -1293,6 +1399,63 @@ For example, given a select `question_0\=' whose free-text companion is
+                       (list (map-elt field :custom-key)
+                             (map-elt field :folded-into)))))))
+ 
++(defun agent-shell-elicitation--option-preview-at (elicitation key value)
++  "Return the preview KEY's VALUE option carries in ELICITATION, or nil.
++
++Reads the parsed option rather than the raw schema, so it answers the
++same question the renderer asked when it decided whether to draw a
++disclosure glyph."
++  (map-elt (seq-find (lambda (option)
++                       (equal (map-elt option :value) value))
++                     (map-elt (agent-shell-elicitation--field elicitation key) :options))
++           :preview))
++
++(cl-defun agent-shell-elicitation--toggle-preview (&key state id key value)
++  "Open or close the preview of KEY's VALUE option of elicitation ID in STATE."
++  (when-let* ((elicitation (agent-shell-elicitation--get state id))
++              (preview (cons key value)))
++    (agent-shell-elicitation--put
++     state id
++     (agent-shell-elicitation--assoc-put
++      elicitation :previews
++      (if (member preview (map-elt elicitation :previews))
++          (remove preview (map-elt elicitation :previews))
++        (cons preview (map-elt elicitation :previews)))))
++    (agent-shell-elicitation--render :state state :id id)))
++
++(defun agent-shell-elicitation-toggle-preview ()
++  "Open or close the preview of the option at point.
++
++Reached through `agent-shell-elicitation-preview-map', which covers the
++option itself as well as its disclosure glyph, so an answer offering a
++preview can be opened without first moving onto the glyph.
++`end-of-line' lands after the glyph rather than on it, and RET past the
++end of a line keeps its usual meaning.
++
++That map is applied only where there is a preview, so a control without
++one never binds the key.  Reaching this command anyway -- through
++\\[execute-extended-command], or a binding of your own -- signals a
++`user-error' rather than redrawing an identical form."
++  (declare (modes agent-shell-mode))
++  (interactive)
++  (let ((control (agent-shell-elicitation--control-at-point))
++        (acted-in (current-buffer)))
++    (unless control
++      (user-error "No question control at point"))
++    (with-current-buffer (agent-shell-elicitation--shell-buffer)
++      (let ((state (agent-shell--state)))
++        (unless (agent-shell-elicitation--option-preview-at
++                 (agent-shell-elicitation--get state (map-elt control :id))
++                 (map-elt control :key) (map-elt control :value))
++          (user-error "No preview for this answer"))
++        (agent-shell-elicitation--toggle-preview
++         :state state
++         :id (map-elt control :id)
++         :key (map-elt control :key)
++         :value (map-elt control :value))))
++    (with-current-buffer acted-in
++      (agent-shell-elicitation--goto-control control))))
++
+ (defun agent-shell-elicitation-act ()
+   "Act on the elicitation control at point.
+ 
+@@ -1341,6 +1504,9 @@ closure so it stays rebindable (see issue #759)."
+               :field (agent-shell-elicitation--field elicitation (map-elt control :key))
+               :value (map-nested-elt elicitation
+                                      (list :values (map-elt control :key)))))))
++          ('preview (agent-shell-elicitation--toggle-preview
++                     :state state :id id :key (map-elt control :key)
++                     :value (map-elt control :value)))
+           ('submit (agent-shell-elicitation--submit :state state :id id))
+           ('decline
+            (agent-shell-elicitation--respond :state state :id id :action 'decline)
+diff --git a/tests/agent-shell-elicitation-tests.el b/tests/agent-shell-elicitation-tests.el
+index d7894a26..84bc903f 100644
+--- a/tests/agent-shell-elicitation-tests.el
++++ b/tests/agent-shell-elicitation-tests.el
+@@ -635,6 +635,111 @@ so the question is on screen before the form is."
+     (should (assq :active-requests state))))
+ 
+ 
++;;; Option previews
++
++(defconst agent-shell-elicitation-tests--preview-schema
++  '((type . "object")
++    (properties
++     (q (type . "string") (title . "Approach")
++        (oneOf . [((const . "a") (title . "Refactor first")
++                   (description . "Clean up before adding.")
++                   (_meta (_claude/askUserQuestionOption (preview . "mockup one\nmockup two"))))
++                  ((const . "b") (title . "Add first"))]))))
++  "A question whose first option carries a preview, as Claude sends it.")
++
++(ert-deftest agent-shell-elicitation-parses-an-option-preview-test ()
++  "A preview is read off the option, and its absence is not an error."
++  (let ((options (agent-shell-elicitation--titled-options
++                  (map-nested-elt agent-shell-elicitation-tests--preview-schema
++                                  '(properties q oneOf)))))
++    (should (equal (map-elt (seq-first options) :preview) "mockup one\nmockup two"))
++    (should-not (map-elt (seq-elt options 1) :preview))))
++
++(ert-deftest agent-shell-elicitation-preview-costs-no-extra-tab-stop-test ()
++  "An option with a preview is still one TAB stop, glyph and all.
++
++The disclosure glyph acts but is not navigable, so walking the form
++stops once per option rather than twice for the ones offering a
++preview."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema agent-shell-elicitation-tests--preview-schema))
++    (with-temp-buffer
++      (insert (car bodies))
++      (goto-char (point-min))
++      (let (stops)
++        (while (agent-shell-elicitation-next-field)
++          (push (map-elt (get-text-property (point) 'agent-shell-elicitation-control) :action)
++                stops))
++        ;; Two options and the two buttons; no stop for the glyph.
++        (should (equal (nreverse stops) '(select select submit decline)))))))
++
++(ert-deftest agent-shell-elicitation-preview-opens-and-closes-test ()
++  "The preview opens and closes, from the option as well as from its glyph.
++
++`end-of-line' lands after the glyph rather than on it, so requiring the
++glyph would mean stepping back a character first, and RET past the end
++of a line would stop meaning what it means elsewhere.
++
++Which previews are open is kept in the elicitation, not in the rendered
++text, so the shell buffer and the viewport cannot disagree about it."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema agent-shell-elicitation-tests--preview-schema))
++    (should (string-match-p "Refactor first \u25b6" (substring-no-properties (car bodies))))
++    (should-not (string-match-p "mockup" (substring-no-properties (car bodies))))
++    (with-temp-buffer
++      (insert (car bodies))
++      (goto-char (point-min))
++      (should (agent-shell-elicitation-next-field))
++      ;; Point is on the option itself, not on the glyph.
++      (should (eq (map-elt (get-text-property (point) 'agent-shell-elicitation-control) :action)
++                  'select))
++      (should (eq agent-shell-elicitation-preview-map
++                  (get-text-property (point) 'keymap)))
++      (should (eq #'agent-shell-elicitation-toggle-preview (key-binding (kbd "?")))))
++    (agent-shell-elicitation--toggle-preview :state state :id 5 :key "q" :value "a")
++    (let ((body (substring-no-properties (car bodies))))
++      (should (string-match-p "Refactor first \u25bc" body))
++      (should (string-match-p "mockup one" body))
++      (should (string-match-p "mockup two" body)))
++    (agent-shell-elicitation--toggle-preview :state state :id 5 :key "q" :value "a")
++    (should (string-match-p "Refactor first \u25b6" (substring-no-properties (car bodies))))
++    (should-not (string-match-p "mockup" (substring-no-properties (car bodies))))))
++
++(ert-deftest agent-shell-elicitation-preview-is-readable-without-opening-test ()
++  "The preview is offered as `help-echo', so \\[display-local-help] reads it out.
++
++That needs no keybinding of our own, and works on the option itself
++rather than only on the glyph.  An option carrying no preview offers no
++help, keeps the plain control keymap so \\`?' stays free for whatever the
++buffer binds it to, and says so when asked to open one anyway."
++  (agent-shell-elicitation-tests--with-shell (state sent bodies)
++    (agent-shell--on-request
++     :state state
++     :acp-request (agent-shell-elicitation-tests--request
++                   :id 5 :schema agent-shell-elicitation-tests--preview-schema))
++    (with-temp-buffer
++      (insert (car bodies))
++      (goto-char (point-min))
++      (should (agent-shell-elicitation-next-field))
++      (should (equal (get-text-property (point) 'help-echo) "mockup one\nmockup two"))
++      ;; The option without a preview offers no help, and does not take
++      ;; over `?' -- the viewport binds it to its help menu.
++      (should (agent-shell-elicitation-next-field))
++      (should-not (get-text-property (point) 'help-echo))
++      (should (eq agent-shell-elicitation-map (get-text-property (point) 'keymap)))
++      (should-not (eq #'agent-shell-elicitation-toggle-preview (key-binding (kbd "?"))))
++      (cl-letf (((symbol-function 'agent-shell-elicitation--shell-buffer)
++                 (lambda () (current-buffer))))
++        (should-error (agent-shell-elicitation-toggle-preview) :type 'user-error)))
++    (should-not (map-elt (agent-shell-elicitation--get state 5) :previews))))
++
++
+ ;;; Tool calls behind a questionnaire
+ 
+ (defconst agent-shell-elicitation-tests--questionnaire

@@ -1,0 +1,28 @@
+From 06ae24784a188dac27cbb1905021fbd2cd8f08d2 Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 00:43:27 +0000
+Subject: [PATCH] client/wayland: Fix preedit cursor_end in set_preedit_string
+
+cursor_end was set to strlen(text), making the cursor span from the
+cursor position to the end of the preedit string.  Per the
+zwp_input_method_v2 protocol, cursor_begin == cursor_end means a point
+cursor.  Pass cursor for both begin and end.
+
+BUG=https://github.com/ibus/ibus/pull/2880
+---
+ client/wayland/ibuswaylandim.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index d4fd2db84..9c61272bb 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -667,7 +667,7 @@ _context_show_preedit_text_cb (IBusInputContext *context,
+                 priv->seat->input_method_v2,
+                 priv->preedit_text->text,
+                 cursor,
+-                strlen (priv->preedit_text->text));
++                cursor);
+         zwp_input_method_v2_commit (priv->seat->input_method_v2,
+                                     priv->im_serial);
+         priv->hiding_preedit_text = FALSE;

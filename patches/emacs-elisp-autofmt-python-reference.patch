@@ -1,0 +1,62 @@
+diff --git c/elisp-autofmt.el w/elisp-autofmt.el
+index 567cffd..abed51a 100644
+--- c/elisp-autofmt.el
++++ w/elisp-autofmt.el
+@@ -124,8 +124,9 @@ You may wish to choose one of the following options:
+ Otherwise you can set this to a user defined function."
+   :type 'function)
+ 
+-(defcustom elisp-autofmt-python-bin nil
+-  "The Python binary to call to run the auto-formatting utility."
++(defcustom elisp-autofmt-python-bin "python"
++  "The Python binary to call to run the auto-formatting utility.
++If nil, invoke `elisp-autofmt.py' directly."
+   :type 'string)
+ 
+ (defcustom elisp-autofmt-cache-directory
+@@ -865,14 +866,15 @@ Return the cache name only (no directory)."
+ 
+       (let ((command-with-args
+              (append
+-              ;; Python command.
+-              (list (or elisp-autofmt-python-bin "python"))
+-              ;; Debug mode.
+-              (cond
+-               (elisp-autofmt-debug-mode
++              (if elisp-autofmt-python-bin
++                  (cond
++                   ;; Debug mode.
++                   (elisp-autofmt-debug-mode
++                    (list elisp-autofmt-python-bin))
++                   (t
++                    (list elisp-autofmt-python-bin "-OO")))
++                ;; Just use the shebang. See <https://codeberg.org/ideasman42/emacs-elisp-autofmt/issues/24>.
+                 (list))
+-               (t
+-                (list "-OO")))
+               ;; Main command.
+               (list
+                elisp-autofmt--bin
+@@ -1137,14 +1139,15 @@ Argument IS-INTERACTIVE is set when running interactively."
+ 
+          (command-with-args
+           (append
+-           ;; Python command.
+-           (list (or elisp-autofmt-python-bin "python"))
+-           ;; Debug mode.
+-           (cond
+-            (elisp-autofmt-debug-mode
++           (if elisp-autofmt-python-bin
++               (cond
++                ;; Debug mode.
++                (elisp-autofmt-debug-mode
++                 (list elisp-autofmt-python-bin))
++                (t
++                 (list elisp-autofmt-python-bin "-OO")))
++             ;; Just use the shebang. See <https://codeberg.org/ideasman42/emacs-elisp-autofmt/issues/24>.
+              (list))
+-            (t
+-             (list "-OO")))
+            ;; Main command.
+            (list
+             elisp-autofmt--bin

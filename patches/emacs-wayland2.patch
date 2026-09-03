@@ -1,0 +1,91 @@
+diff -ru orig/emacs-30.2/src/callproc.c emacs-30.2/src/callproc.c
+--- orig/emacs-30.2/src/callproc.c	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/src/callproc.c	2026-02-02 12:03:21.339551241 +0100
+@@ -1742,7 +1742,6 @@
+   /* For DISPLAY try to get the values from the frame or the initial env.  */
+   if (strcmp (var, "DISPLAY") == 0)
+     {
+-#ifndef HAVE_PGTK
+       Lisp_Object display
+ 	= Fframe_parameter (NILP (frame) ? selected_frame : frame, Qdisplay);
+       if (STRINGP (display))
+@@ -1751,7 +1750,6 @@
+ 	  *valuelen = SBYTES (display);
+ 	  return 1;
+ 	}
+-#endif /* !HAVE_PGTK */
+       /* If still not found, Look for DISPLAY in Vinitial_environment.  */
+       if (getenv_internal_1 (var, varlen, value, valuelen,
+ 			     Vinitial_environment))
+@@ -1879,17 +1877,6 @@
+       {
+ 	Lisp_Object tmp = Fframe_parameter (selected_frame, Qdisplay);
+ 
+-#ifdef HAVE_PGTK
+-	/* The only time GDK actually returns correct information is
+-	   when it's running under X Windows.  DISPLAY shouldn't be
+-	   set to a Wayland display either, since that's an X specific
+-	   variable.  */
+-	if (FRAME_WINDOW_P (SELECTED_FRAME ())
+-	    && strcmp (G_OBJECT_TYPE_NAME (FRAME_X_DISPLAY (SELECTED_FRAME ())),
+-		       "GdkX11Display"))
+-	  tmp = Qnil;
+-#endif /* HAVE_PGTK */
+-
+ 	if (!STRINGP (tmp) && CONSP (Vinitial_environment))
+ 	  /* If still not found, Look for DISPLAY in Vinitial_environment.  */
+ 	  tmp = Fgetenv_internal (build_string ("DISPLAY"),
+diff -ru orig/emacs-30.2/src/pgtkfns.c emacs-30.2/src/pgtkfns.c
+--- orig/emacs-30.2/src/pgtkfns.c	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/src/pgtkfns.c	2026-02-02 12:09:08.735252496 +0100
+@@ -110,27 +110,7 @@
+   return dpyinfo;
+ }
+ 
+-/* On Wayland, even if without WAYLAND_DISPLAY, --display DISPLAY
+-   works, but gdk_display_get_name always return "wayland-0", which
+-   may be different from DISPLAY.  If with WAYLAND_DISPLAY, then it
+-   always returns WAYLAND_DISPLAY.  So pgtk Emacs is confused and
+-   enters multi display environment.  To workaround this situation,
+-   treat all the wayland-* as the same display.  */
+-static Lisp_Object
+-is_wayland_display (Lisp_Object dpyname)
+-{
+-  const char *p = SSDATA (dpyname);
+-  if (strncmp (p, "wayland-", 8) != 0)
+-    return Qnil;
+-  p += 8;
+-  do {
+-    if (*p < '0' || *p > '9')
+-      return Qnil;
+-  } while (*++p != '\0');
+-  return Qt;
+-}
+-
+-/* Return the X display structure for the display named NAME.
++/* Return the pgtk display structure for the display named NAME.
+    Open a new connection if necessary.  */
+ static struct pgtk_display_info *
+ pgtk_display_info_for_name (Lisp_Object name)
+@@ -139,18 +119,9 @@
+ 
+   CHECK_STRING (name);
+ 
+-  if (!NILP (is_wayland_display (name)))
+-    {
+-      for (dpyinfo = x_display_list; dpyinfo; dpyinfo = dpyinfo->next)
+-	if (!NILP (is_wayland_display (XCAR (dpyinfo->name_list_element))))
+-	  return dpyinfo;
+-    }
+-  else
+-    {
+-      for (dpyinfo = x_display_list; dpyinfo; dpyinfo = dpyinfo->next)
+-	if (!NILP (Fstring_equal (XCAR (dpyinfo->name_list_element), name)))
+-	  return dpyinfo;
+-    }
++  for (dpyinfo = x_display_list; dpyinfo; dpyinfo = dpyinfo->next)
++    if (!NILP (Fstring_equal (XCAR (dpyinfo->name_list_element), name)))
++      return dpyinfo;
+ 
+   /* Use this general default value to start with.  */
+   Vx_resource_name = Vinvocation_name;

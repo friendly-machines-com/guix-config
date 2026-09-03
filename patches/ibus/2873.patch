@@ -1,0 +1,38 @@
+From 0e66c1789a99f83082690c6724332c3ede1633bc Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 00:30:02 +0100
+Subject: [PATCH] client/wayland: Fix modifier sequence handling.
+
+BUG=https://github.com/ibus/ibus/issues/2872
+---
+ client/wayland/ibuswaylandim.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index d4fd2db84..058c02c4e 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -1132,6 +1132,23 @@ input_method_keyboard_keymap (void                      *data,
+          * sets %TRUE to `has_keymap`.
+          */
+         priv->seat->has_keymap = TRUE;
++        /* Resynchronize modifier state on the new virtual keyboard.
++         * Modifier events that arrived before the keymap were dropped
++         * (the virtual keyboard rejects them without a keymap), so the
++         * virtual keyboard's modifier state may be stale.
++         */
++        if (priv->state) {
++            zwp_virtual_keyboard_v1_modifiers (
++                    priv->seat->virtual_keyboard,
++                    xkb_state_serialize_mods (priv->state,
++                                              XKB_STATE_MODS_DEPRESSED),
++                    xkb_state_serialize_mods (priv->state,
++                                              XKB_STATE_MODS_LATCHED),
++                    xkb_state_serialize_mods (priv->state,
++                                              XKB_STATE_MODS_LOCKED),
++                    xkb_state_serialize_layout (priv->state,
++                                                XKB_STATE_LAYOUT_EFFECTIVE));
++        }
+     }
+     if (priv->keymap && priv->state && priv->state_system) {
+         close (fd);

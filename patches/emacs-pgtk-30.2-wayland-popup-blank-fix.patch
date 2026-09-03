@@ -1,0 +1,136 @@
+Subject: [PATCH] pgtk: fix popup windows getting blanked ~1s after display on HiDPI
+
+On Wayland with a GDK monitor scale factor != 1 (HiDPI, fractional
+scaling), newly displayed popup/child frames briefly render correctly
+and then get replaced by background color until the user triggers a
+redraw.  Thereafter only cursor-adjacent regions repaint.
+
+Root cause
+----------
+Each pgtk frame starts a 1-second ATIMER_CONTINUOUS in
+`update_watched_scale_factor' (src/pgtkfns.c).  The watcher compares
+FRAME_SCALE_FACTOR (f) against `watched_scale_factor', which is
+hard-initialised to 1.0 at frame creation.  On any monitor with scale
+!= 1, the first tick of the atimer sees a "change" and calls
+
+    pgtk_cr_update_surface_desired_size (f, w, h, /*force=*/true);
+
+With force=true, that routine unconditionally destroys the Cairo
+drawing context and sets SET_FRAME_GARBAGED, even though the surface
+dimensions did not change.
+
+Before the next full redisplay commits a repaint, any partial update
+path (cursor blink, mouse-face, fringe update) goes through
+`pgtk_begin_cr_clip', which allocates a *new empty* Cairo surface,
+draws just the small updated region, and then `flip_cr_context' in
+`pgtk_frame_up_to_date' promotes that mostly-empty surface to be the
+one `pgtk_handle_draw' blits to screen.  Result: the window looks
+blank except for whatever Emacs happened to redraw last.
+
+This matches the reported symptoms exactly (appears fine, blanks
+within ~1s, later only the cursor area repaints).  It is
+Wayland-and-HiDPI-specific because xterm.c has no equivalent watcher
+and a scale=1 display never triggers the mismatch.
+
+Fix
+---
+1. Root cause: in `update_watched_scale_factor', track whether we have
+   ever observed the real scale factor.  The hard-coded 1.0 at init is
+   a placeholder, not a prior value, so the first-time transition from
+   1.0 to the actual scale should just be recorded, not treated as a
+   change that requires destroying the drawing surface.  Subsequent
+   genuine scale changes (e.g. dragging the frame between monitors)
+   still force recreation as before.
+
+2. Defense in depth: in `pgtk_begin_cr_clip', seed a freshly-allocated
+   Cairo surface with the contents of the current `cr_active' surface
+   using CAIRO_OPERATOR_SOURCE.  This guarantees that if a partial
+   update beats the full garbage redisplay to the flip point, the
+   "new" surface already carries the on-screen pixels, so users see
+   old content instead of blank until the real repaint arrives.
+
+Files
+-----
+  src/pgtkterm.h : add scale_factor_seen bit-field to pgtk_output.
+  src/pgtkfns.c  : initialise the flag; gate the force on it.
+  src/pgtkterm.c : seed new Cairo surface from current cr_active.
+
+Apply with: patch -p1 < pgtk-wayland-popup-blank-fix.patch
+---
+ src/pgtkfns.c  | 17 ++++++++++++++---
+ src/pgtkterm.c | 14 ++++++++++++++
+ src/pgtkterm.h |  1 +
+ 3 files changed, 29 insertions(+), 3 deletions(-)
+
+diff -u a/src/pgtkfns.c b/src/pgtkfns.c
+--- a/src/pgtkfns.c
++++ b/src/pgtkfns.c
+@@ -1121,11 +1121,21 @@
+
+   if (scale_factor != FRAME_X_OUTPUT (f)->watched_scale_factor)
+     {
++      bool first = !FRAME_X_OUTPUT (f)->scale_factor_seen;
+       FRAME_X_OUTPUT (f)->watched_scale_factor = scale_factor;
+-      pgtk_cr_update_surface_desired_size (f,
+-					   FRAME_CR_SURFACE_DESIRED_WIDTH (f),
+-					   FRAME_CR_SURFACE_DESIRED_HEIGHT (f),
+-					   true);
++      FRAME_X_OUTPUT (f)->scale_factor_seen = true;
++
++      /* Skip forcing surface recreation on the first observation:
++	 the initial 1.0 stored at frame creation is a placeholder,
++	 not a prior scale factor that actually changed.  Destroying
++	 the Cairo context here would blank the frame until the next
++	 full redisplay, letting an intervening partial update (cursor
++	 blink, mouse-face) flip an empty surface to screen.  */
++      if (!first)
++	pgtk_cr_update_surface_desired_size (f,
++					     FRAME_CR_SURFACE_DESIRED_WIDTH (f),
++					     FRAME_CR_SURFACE_DESIRED_HEIGHT (f),
++					     true);
+     }
+ }
+
+@@ -1723,6 +1733,7 @@
+   FRAME_X_OUTPUT (f)->cr_surface_visible_bell = NULL;
+   FRAME_X_OUTPUT (f)->atimer_visible_bell = NULL;
+   FRAME_X_OUTPUT (f)->watched_scale_factor = 1.0;
++  FRAME_X_OUTPUT (f)->scale_factor_seen = false;
+   struct timespec ts = make_timespec (1, 0);
+   FRAME_X_OUTPUT (f)->scale_factor_atimer = start_atimer(ATIMER_CONTINUOUS,
+ 							 ts,
+diff -u a/src/pgtkterm.c b/src/pgtkterm.c
+--- a/src/pgtkterm.c
++++ b/src/pgtkterm.c
+@@ -7547,6 +7547,20 @@
+
+       cr = FRAME_CR_CONTEXT (f) = cairo_create (surface);
+       cairo_surface_destroy (surface);
++
++      /* Seed the new surface with the currently-presented one so that
++	 a partial update cannot flip a mostly-empty surface to screen
++	 before a full redisplay of a GARBAGED frame completes.  */
++      if (FRAME_CR_ACTIVE_CONTEXT (f))
++	{
++	  cairo_surface_t *old
++	    = cairo_get_target (FRAME_CR_ACTIVE_CONTEXT (f));
++	  cairo_save (cr);
++	  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
++	  cairo_set_source_surface (cr, old, 0, 0);
++	  cairo_paint (cr);
++	  cairo_restore (cr);
++	}
+     }
+
+   cairo_save (cr);
+diff -u a/src/pgtkterm.h b/src/pgtkterm.h
+--- a/src/pgtkterm.h
++++ b/src/pgtkterm.h
+@@ -449,6 +449,7 @@
+      and cairo_surface_t.  I need GTK's such signal, but there isn't, so
+      I watch it periodically with atimer. */
+   double watched_scale_factor;
++  bool_bf scale_factor_seen : 1;
+   struct atimer *scale_factor_atimer;
+ };
+

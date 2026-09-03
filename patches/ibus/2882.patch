@@ -1,0 +1,31 @@
+From a816cf7238bb0fd8af6e23c294ea943f78c81d5d Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 00:47:19 +0000
+Subject: [PATCH] ui/gtk3: Fix display wait timeout from ~5 years to 3 minutes
+
+MAX_DISPLAY_IDLE_TIME included G_USEC_PER_SEC in the multiplication,
+making the iteration count 18 billion instead of the intended 18000.
+Each iteration sleeps 10ms, so the effective timeout was 5.7 years
+instead of the intended 3 minutes.
+
+The sleep duration already uses G_USEC_PER_SEC / SLEEP_DIV_PER_SEC,
+so the iteration count should just be SLEEP_DIV_PER_SEC * 60 * 3.
+
+BUG=https://github.com/ibus/ibus/pull/2882
+---
+ ui/gtk3/application.vala | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ui/gtk3/application.vala b/ui/gtk3/application.vala
+index dcabc892e..aa3315431 100644
+--- a/ui/gtk3/application.vala
++++ b/ui/gtk3/application.vala
+@@ -25,7 +25,7 @@ const string IBUS_WAYLAND_VERSION="1.1";
+ const ulong G_USEC_PER_SEC=1000000L;
+ const ulong SLEEP_DIV_PER_SEC = 100L;
+ const ulong MAX_DISPLAY_IDLE_TIME =
+-        G_USEC_PER_SEC * SLEEP_DIV_PER_SEC * 60 * 3;
++        SLEEP_DIV_PER_SEC * 60 * 3;
+ 
+ static string prgname;
+ static IBus.Bus bus;

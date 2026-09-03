@@ -1,0 +1,39 @@
+From d668453a245a6f5c749a380c4cb1e1f02b565902 Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 00:28:04 +0000
+Subject: [PATCH] client/wayland: Free leaked resources in
+ ibus_wayland_im_destroy
+
+The destroy handler did not free xkb state/keymap/context, the log
+file handle, or the preedit_text/surrounding_text/cancellable GObjects,
+leaking them when the IBusWaylandIM object is destroyed.
+
+BUG=https://github.com/ibus/ibus/pull/2876
+---
+ client/wayland/ibuswaylandim.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index d4fd2db84..1f07ed6ca 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -2763,6 +2763,19 @@ ibus_wayland_im_destroy (IBusObject *object)
+         g_clear_pointer (&priv->input_method_manager_v2,
+                          zwp_input_method_manager_v2_destroy);
+     }
++    if (priv->state_system)
++        xkb_state_unref (priv->state_system);
++    if (priv->state)
++        xkb_state_unref (priv->state);
++    if (priv->keymap)
++        xkb_keymap_unref (priv->keymap);
++    if (priv->xkb_context)
++        xkb_context_unref (priv->xkb_context);
++    if (priv->log)
++        fclose (priv->log);
++    g_clear_object (&priv->preedit_text);
++    g_clear_object (&priv->surrounding_text);
++    g_clear_object (&priv->cancellable);
+ 
+ 
+     IBUS_OBJECT_CLASS (ibus_wayland_im_parent_class)->destroy (object);

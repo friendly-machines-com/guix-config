@@ -1,0 +1,27 @@
+From 2082f59fed8129be1d4601da356dc5e5ccb8c8b0 Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 01:16:19 +0000
+Subject: [PATCH] client/wayland: Copy keysym into async key event
+
+_process_key_event_async() did not copy event->sym into the async
+event struct.  The callback _process_key_event_done() then called
+ibus_wayland_im_post_key() with sym=0, so ISO_Level*_Latch keysyms
+were not filtered in async mode.
+
+BUG=https://github.com/ibus/ibus/pull/2886
+---
+ client/wayland/ibuswaylandim.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index d4fd2db84..b55cbf8fa 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -1409,6 +1409,7 @@ _process_key_event_async (IBusWaylandIM       *wlim,
+     async_event->key_serial = event->key_serial;
+     async_event->time = event->time;
+     async_event->key = event->key;
++    async_event->sym = event->sym;
+     async_event->modifiers = event->modifiers & ~IBUS_RELEASE_MASK;
+     async_event->state = event->state;
+     async_event->wlim = wlim;

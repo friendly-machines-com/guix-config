@@ -1,0 +1,272 @@
+diff -ru orig/emacs-30.2/lisp/server.el emacs-30.2/lisp/server.el
+--- orig/emacs-30.2/lisp/server.el	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/lisp/server.el	2026-02-02 01:42:00.871621489 +0100
+@@ -1407,6 +1407,18 @@
+ 		 (or files commands evalexprs)
+ 		 (setq use-current-frame t))
+ 
++	    ;; Add child process environment parameters for pgtk.
++	    ;; Extract WAYLAND_DISPLAY and DISPLAY from client's environment.
++	    (let ((env (process-get proc 'env)))
++	      (when-let ((wayland-display (getenv-internal "WAYLAND_DISPLAY" env)))
++		(setq frame-parameters
++		      (cons (cons 'child-env-wayland-display wayland-display)
++			    frame-parameters)))
++	      (when-let ((x-display (getenv-internal "DISPLAY" env)))
++		(setq frame-parameters
++		      (cons (cons 'child-env-display x-display)
++			    frame-parameters))))
++
+ 	    (setq frame
+ 		  (cond
+ 		   ((and use-current-frame
+diff -ru orig/emacs-30.2/src/callproc.c emacs-30.2/src/callproc.c
+--- orig/emacs-30.2/src/callproc.c	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/src/callproc.c	2026-02-02 03:13:59.000060959 +0100
+@@ -1742,7 +1742,20 @@
+   /* For DISPLAY try to get the values from the frame or the initial env.  */
+   if (strcmp (var, "DISPLAY") == 0)
+     {
+-#ifndef HAVE_PGTK
++#ifdef HAVE_PGTK
++      /* For pgtk, use the DISPLAY value from when the display was opened.  */
++      struct frame *f = NILP (frame) ? SELECTED_FRAME () : XFRAME (frame);
++      if (FRAME_PGTK_P (f))
++	{
++	  Lisp_Object display = FRAME_DISPLAY_INFO (f)->child_env_display;
++	  if (STRINGP (display))
++	    {
++	      *value    = SSDATA (display);
++	      *valuelen = SBYTES (display);
++	      return 1;
++	    }
++	}
++#else /* !HAVE_PGTK */
+       Lisp_Object display
+ 	= Fframe_parameter (NILP (frame) ? selected_frame : frame, Qdisplay);
+       if (STRINGP (display))
+@@ -1759,6 +1772,28 @@
+     }
+ #endif /* !HAVE_ANDROID */
+ 
++#ifdef HAVE_PGTK
++  /* For WAYLAND_DISPLAY, use the value from when the display was opened.  */
++  if (strcmp (var, "WAYLAND_DISPLAY") == 0)
++    {
++      struct frame *f = NILP (frame) ? SELECTED_FRAME () : XFRAME (frame);
++      if (FRAME_PGTK_P (f))
++	{
++	  Lisp_Object wayland_display = FRAME_DISPLAY_INFO (f)->child_env_wayland_display;
++	  if (STRINGP (wayland_display))
++	    {
++	      *value    = SSDATA (wayland_display);
++	      *valuelen = SBYTES (wayland_display);
++	      return 1;
++	    }
++	}
++      /* If still not found, Look for WAYLAND_DISPLAY in Vinitial_environment.  */
++      if (getenv_internal_1 (var, varlen, value, valuelen,
++			     Vinitial_environment))
++	return *value ? 1 : 0;
++    }
++#endif /* HAVE_PGTK */
++
+   return 0;
+ }
+ 
+@@ -1853,6 +1888,9 @@
+ #ifndef HAVE_ANDROID
+     Lisp_Object display = Qnil;
+ #endif /* !HAVE_ANDROID */
++#ifdef HAVE_PGTK
++    Lisp_Object wayland_display = Qnil;
++#endif /* HAVE_PGTK */
+ 
+     new_length = 0;
+ 
+@@ -1867,6 +1905,13 @@
+ 	  /* DISPLAY is specified in process-environment.  */
+ 	  display = Qt;
+ #endif /* !HAVE_ANDROID */
++#ifdef HAVE_PGTK
++	if (strncmp (SSDATA (XCAR (tem)), "WAYLAND_DISPLAY", 15) == 0
++	    && (SDATA (XCAR (tem)) [15] == '\0'
++		|| SDATA (XCAR (tem)) [15] == '='))
++	  /* WAYLAND_DISPLAY is specified in process-environment.  */
++	  wayland_display = Qt;
++#endif /* HAVE_PGTK */
+ 	new_length++;
+       }
+ 
+@@ -1877,18 +1922,25 @@
+     /* If not provided yet, use the frame's DISPLAY.  */
+     if (NILP (display))
+       {
+-	Lisp_Object tmp = Fframe_parameter (selected_frame, Qdisplay);
+-
+ #ifdef HAVE_PGTK
+-	/* The only time GDK actually returns correct information is
+-	   when it's running under X Windows.  DISPLAY shouldn't be
+-	   set to a Wayland display either, since that's an X specific
+-	   variable.  */
+-	if (FRAME_WINDOW_P (SELECTED_FRAME ())
+-	    && strcmp (G_OBJECT_TYPE_NAME (FRAME_X_DISPLAY (SELECTED_FRAME ())),
+-		       "GdkX11Display"))
+-	  tmp = Qnil;
+-#endif /* HAVE_PGTK */
++	Lisp_Object tmp = Qnil;
++	if (FRAME_PGTK_P (SELECTED_FRAME ()))
++	  tmp = FRAME_DISPLAY_INFO (SELECTED_FRAME ())->child_env_display;
++	if (!STRINGP (tmp))
++	  {
++	    tmp = Fframe_parameter (selected_frame, Qdisplay);
++	    /* The only time GDK actually returns correct information is
++	       when it's running under X Windows.  DISPLAY shouldn't be
++	       set to a Wayland display either, since that's an X specific
++	       variable.  */
++	    if (FRAME_WINDOW_P (SELECTED_FRAME ())
++		&& strcmp (G_OBJECT_TYPE_NAME (FRAME_X_DISPLAY (SELECTED_FRAME ())),
++			   "GdkX11Display"))
++	      tmp = Qnil;
++	  }
++#else /* !HAVE_PGTK */
++	Lisp_Object tmp = Fframe_parameter (selected_frame, Qdisplay);
++#endif /* !HAVE_PGTK */
+ 
+ 	if (!STRINGP (tmp) && CONSP (Vinitial_environment))
+ 	  /* If still not found, Look for DISPLAY in Vinitial_environment.  */
+@@ -1902,6 +1954,24 @@
+       }
+ #endif /* !HAVE_ANDROID */
+ 
++#ifdef HAVE_PGTK
++    /* If WAYLAND_DISPLAY not provided yet, use the value from dpyinfo.  */
++    if (NILP (wayland_display))
++      {
++	Lisp_Object tmp = Qnil;
++	if (FRAME_PGTK_P (SELECTED_FRAME ()))
++	  tmp = FRAME_DISPLAY_INFO (SELECTED_FRAME ())->child_env_wayland_display;
++	if (!STRINGP (tmp) && CONSP (Vinitial_environment))
++	  tmp = Fgetenv_internal (build_string ("WAYLAND_DISPLAY"),
++				  Vinitial_environment);
++	if (STRINGP (tmp))
++	  {
++	    wayland_display = tmp;
++	    new_length++;
++	  }
++      }
++#endif /* HAVE_PGTK */
++
+     /* new_length + 2 to include PWD and terminating 0.  */
+     env = new_env = xnmalloc (new_length + 2, sizeof *env);
+     record_unwind_protect_ptr (xfree, env);
+@@ -1920,6 +1990,16 @@
+       }
+ #endif /* !HAVE_ANDROID */
+ 
++#ifdef HAVE_PGTK
++    if (STRINGP (wayland_display))
++      {
++	char *vdata = xmalloc (sizeof "WAYLAND_DISPLAY=" + SBYTES (wayland_display));
++	record_unwind_protect_ptr (xfree, vdata);
++	lispstpcpy (stpcpy (vdata, "WAYLAND_DISPLAY="), wayland_display);
++	new_env = add_env (env, new_env, vdata);
++      }
++#endif /* HAVE_PGTK */
++
+     /* Overrides.  */
+     for (tem = Vprocess_environment;
+ 	 CONSP (tem) && STRINGP (XCAR (tem));
+diff -ru orig/emacs-30.2/src/pgtkfns.c emacs-30.2/src/pgtkfns.c
+--- orig/emacs-30.2/src/pgtkfns.c	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/src/pgtkfns.c	2026-02-02 01:32:35.484221620 +0100
+@@ -1311,6 +1311,18 @@
+ 
+   FRAME_DISPLAY_INFO (f) = dpyinfo;
+ 
++  /* Update child process environment variables from frame parameters.
++     These are passed by emacsclient to set the correct WAYLAND_DISPLAY
++     and DISPLAY for child processes spawned from this frame.  */
++  tem = gui_display_get_arg (dpyinfo, parms, Qchild_env_wayland_display,
++			     NULL, NULL, RES_TYPE_STRING);
++  if (STRINGP (tem))
++    dpyinfo->child_env_wayland_display = tem;
++  tem = gui_display_get_arg (dpyinfo, parms, Qchild_env_display,
++			     NULL, NULL, RES_TYPE_STRING);
++  if (STRINGP (tem))
++    dpyinfo->child_env_display = tem;
++
+   /* With FRAME_DISPLAY_INFO set up, this unwind-protect is safe.  */
+   record_unwind_protect (do_unwind_create_frame, frame);
+ 
+@@ -3830,6 +3842,8 @@
+   DEFSYM (Qdark, "dark");
+   DEFSYM (Qhide, "hide");
+   DEFSYM (Qresize_mode, "resize-mode");
++  DEFSYM (Qchild_env_wayland_display, "child-env-wayland-display");
++  DEFSYM (Qchild_env_display, "child-env-display");
+ 
+   DEFVAR_LISP ("x-cursor-fore-pixel", Vx_cursor_fore_pixel,
+ 	       doc: /* SKIP: real doc in xfns.c.  */);
+diff -ru orig/emacs-30.2/src/pgtkterm.c emacs-30.2/src/pgtkterm.c
+--- orig/emacs-30.2/src/pgtkterm.c	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/src/pgtkterm.c	2026-02-02 01:15:38.473138249 +0100
+@@ -7023,6 +7023,9 @@
+   static char *initial_display = NULL;
+   char *dpy_name;
+   static void *handle = NULL;
++  /* Environment variables for child process environments.  */
++  static Lisp_Object child_env_wayland_display;
++  static Lisp_Object child_env_display;
+   Lisp_Object lisp_dpy_name = Qnil;
+   GdkScreen *gscr;
+   gdouble dpi;
+@@ -7031,6 +7034,8 @@
+ 
+   if (!x_initialized)
+     {
++      const char *env_val;
++
+       any_help_event_p = false;
+ 
+       Fset_input_interrupt_mode (Qt);
+@@ -7040,6 +7045,12 @@
+       gui_init_fringe (&pgtk_redisplay_interface);
+ #endif
+ 
++      /* Save environment variables for child process environments.  */
++      env_val = getenv ("WAYLAND_DISPLAY");
++      child_env_wayland_display = env_val ? build_string (env_val) : Qnil;
++      env_val = getenv ("DISPLAY");
++      child_env_display = env_val ? build_string (env_val) : Qnil;
++
+       ++x_initialized;
+     }
+ 
+@@ -7145,6 +7156,8 @@
+   x_display_list = dpyinfo;
+ 
+   dpyinfo->name_list_element = Fcons (lisp_dpy_name, Qnil);
++  dpyinfo->child_env_wayland_display = child_env_wayland_display;
++  dpyinfo->child_env_display = child_env_display;
+   dpyinfo->gdpy = dpy;
+ 
+   /* https://lists.gnu.org/r/emacs-devel/2015-11/msg00194.html  */
+diff -ru orig/emacs-30.2/src/pgtkterm.h emacs-30.2/src/pgtkterm.h
+--- orig/emacs-30.2/src/pgtkterm.h	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/src/pgtkterm.h	2026-02-02 01:15:20.477151355 +0100
+@@ -166,6 +166,14 @@
+   /* This is a cons cell of the form (NAME . FONT-LIST-CACHE).  */
+   Lisp_Object name_list_element;
+ 
++  /* WAYLAND_DISPLAY for child process environments.  The value from
++     the environment when this display was opened.  Qnil if not set.  */
++  Lisp_Object child_env_wayland_display;
++
++  /* DISPLAY for child process environments.  The value from the
++     environment when this display was opened.  Qnil if not set.  */
++  Lisp_Object child_env_display;
++
+   /* Number of frames that are on this display.  */
+   int reference_count;
+ 

@@ -1,0 +1,20 @@
+diff --git a/types/wlr_input_method_v2.c b/types/wlr_input_method_v2.c
+index a950165..75ceca7 100644
+--- a/types/wlr_input_method_v2.c
++++ b/types/wlr_input_method_v2.c
+@@ -92,6 +92,15 @@ static void im_commit(struct wl_client *client, struct wl_resource *resource,
+ 		return;
+ 	}
+ 	if (serial != input_method->current_serial) {
++		bool has_delete =
++			input_method->pending.delete.before_length != 0 ||
++			input_method->pending.delete.after_length != 0;
++		wlr_log(WLR_ERROR, "Ignoring stale input-method commit: serial %u, "
++			"expected %u (commit-text: %s, preedit: %s, delete: %s)",
++			serial, input_method->current_serial,
++			input_method->pending.commit_text ? "yes" : "no",
++			input_method->pending.preedit.text ? "yes" : "no",
++			has_delete ? "yes" : "no");
+ 		input_state_reset(&input_method->pending);
+ 		return;
+ 	}

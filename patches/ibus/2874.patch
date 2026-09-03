@@ -1,0 +1,70 @@
+From 7bde3e3bf7a89a7fe11df88d9a813ea0a83bd55d Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 00:12:18 +0000
+Subject: [PATCH] client/wayland: Guard against XKB_MOD_INVALID in modifier
+ mask computation
+
+xkb_map_mod_get_index() returns XKB_MOD_INVALID ((xkb_mod_index_t)-1)
+when the modifier name does not exist in the keymap.  Using that value
+as a shift count in `1 << index` is undefined behavior in C.
+
+Replace the bare shifts with a macro that checks for XKB_MOD_INVALID
+and returns 0 for missing modifiers.
+
+BUG=https://github.com/ibus/ibus/pull/2874
+---
+ client/wayland/ibuswaylandim.c | 41 ++++++++++++++++------------------
+ 1 file changed, 19 insertions(+), 22 deletions(-)
+
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index d4fd2db84..393b7fa3e 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -1049,28 +1049,25 @@ ibus_wayland_im_update_xkb_state (IBusWaylandIM     *wlim,
+     g_return_val_if_fail (keymap, FALSE);
+     g_return_val_if_fail ((state = xkb_state_new (keymap)), FALSE);
+ 
+-    priv->shift_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Shift");
+-    priv->lock_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Lock");
+-    priv->control_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Control");
+-    priv->mod1_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Mod1");
+-    priv->mod2_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Mod2");
+-    priv->mod3_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Mod3");
+-    priv->mod4_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Mod4");
+-    priv->mod5_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Mod5");
+-    priv->super_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Super");
+-    priv->hyper_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Hyper");
+-    priv->meta_mask =
+-        1 << xkb_map_mod_get_index (keymap, "Meta");
++    /* xkb_map_mod_get_index() returns XKB_MOD_INVALID ((xkb_mod_index_t)-1)
++     * when the modifier name does not exist in the keymap.  Shifting by
++     * that value is undefined behavior in C.
++     */
++#define _WL_MOD_MASK(keymap, name) \
++    ({ xkb_mod_index_t idx = xkb_map_mod_get_index (keymap, name); \
++       (idx != XKB_MOD_INVALID) ? (1u << idx) : 0; })
++    priv->shift_mask   = _WL_MOD_MASK (keymap, "Shift");
++    priv->lock_mask    = _WL_MOD_MASK (keymap, "Lock");
++    priv->control_mask = _WL_MOD_MASK (keymap, "Control");
++    priv->mod1_mask    = _WL_MOD_MASK (keymap, "Mod1");
++    priv->mod2_mask    = _WL_MOD_MASK (keymap, "Mod2");
++    priv->mod3_mask    = _WL_MOD_MASK (keymap, "Mod3");
++    priv->mod4_mask    = _WL_MOD_MASK (keymap, "Mod4");
++    priv->mod5_mask    = _WL_MOD_MASK (keymap, "Mod5");
++    priv->super_mask   = _WL_MOD_MASK (keymap, "Super");
++    priv->hyper_mask   = _WL_MOD_MASK (keymap, "Hyper");
++    priv->meta_mask    = _WL_MOD_MASK (keymap, "Meta");
++#undef _WL_MOD_MASK
+ 
+     if (priv->state)
+         xkb_state_unref (priv->state);

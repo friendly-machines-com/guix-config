@@ -1,0 +1,45 @@
+From 7e4fb1ed4c3d12d7343ed9423223a720939db65b Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 00:25:07 +0000
+Subject: [PATCH] client/wayland: Update xkb state on every keymap change, not
+ just the first
+
+The early return in input_method_keyboard_keymap() skipped all keymap
+updates after the initial one.  If the user changes their system XKB
+layout at runtime (e.g. via swaymsg), IBus kept using the old keymap
+for keysym resolution and modifier mask computation, producing wrong
+key events until restarted.
+
+Remove the early return so that xkb state is always rebuilt from the
+new keymap.  Also unref the old state_system before re-assigning it
+to avoid a reference leak.
+
+BUG=https://github.com/ibus/ibus/pull/2875
+---
+ client/wayland/ibuswaylandim.c | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index d4fd2db84..d38da0e48 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -1133,15 +1133,14 @@ input_method_keyboard_keymap (void                      *data,
+          */
+         priv->seat->has_keymap = TRUE;
+     }
+-    if (priv->keymap && priv->state && priv->state_system) {
+-        close (fd);
+-        return;
+-    }
+     keymap = create_system_xkb_keymap (priv->xkb_context, format, fd, size);
+     if (keymap && !ibus_wayland_im_update_xkb_state (wlim, keymap))
+         xkb_keymap_unref (keymap);
+-    if (priv->state)
++    if (priv->state) {
++        if (priv->state_system)
++            xkb_state_unref (priv->state_system);
+         priv->state_system = xkb_state_ref (priv->state);
++    }
+ }
+ 
+ 

@@ -1,0 +1,12 @@
+diff -ru orig/emacs-color-theme-solarized/solarized-definitions.el emacs-color-theme-solarized/solarized-definitions.el
+--- orig/emacs-color-theme-solarized/solarized-definitions.el	2025-03-15 05:58:47.268601236 +0100
++++ emacs-color-theme-solarized/solarized-definitions.el	2025-03-15 06:05:36.600247125 +0100
+@@ -273,7 +273,7 @@
+                 (success (,@fg-blue))              ; MoreMsg
+                 (escape-glyph (,@fg-red))
+                 (fringe (,@fg-base01 ,@bg-base02))
+-                (linum (,@fg-base01 ,@bg-base02))
++                (linum (,@fg-base01 ,@bg-base02 :inherit default))
+                 (header-line (,@fg-base0 ,@bg-base02 ,@fmt-revbb)) ; Pmenu
+                 (highlight (,@bg-base02))
+                 (hl-line (:underline ,opt-under ,@bg-base02)) ; CursorLine

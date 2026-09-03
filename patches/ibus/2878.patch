@@ -1,0 +1,44 @@
+From 3e02214b039f2aef9c69a9f1d17b4bcf3abe38ef Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 00:38:39 +0000
+Subject: [PATCH] client/wayland: Forward key instead of dropping it when
+ ibuscontext is NULL in sync mode
+
+_process_key_event_sync() silently dropped key events when ibuscontext
+was NULL.  Use the same fallback as input_method_keyboard_key(): try
+ibus_wayland_im_post_key(), then forward via ibus_wayland_im_key() if
+unhandled.
+
+BUG=https://github.com/ibus/ibus/pull/2878
+---
+ client/wayland/ibuswaylandim.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index d4fd2db84..92b3d477d 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -1361,8 +1361,22 @@ _process_key_event_sync (IBusWaylandIM       *wlim,
+     g_return_if_fail (IBUS_IS_WAYLAND_IM (wlim));
+     g_assert (event);
+     priv = ibus_wayland_im_get_instance_private (wlim);
+-    if (!priv->ibuscontext)
++    if (!priv->ibuscontext) {
++        retval = ibus_wayland_im_post_key (wlim,
++                                           event->key,
++                                           event->modifiers,
++                                           event->state,
++                                           0,
++                                           FALSE);
++        if (!retval) {
++            ibus_wayland_im_key (wlim,
++                                 event->key_serial,
++                                 event->time,
++                                 event->key,
++                                 event->state);
++        }
+         return;
++    }
+     retval = ibus_input_context_process_key_event (priv->ibuscontext,
+                                                    event->sym,
+                                                    event->key,

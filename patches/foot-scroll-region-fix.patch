@@ -1,0 +1,329 @@
+commit 3dad0b47a357789a06b69e687b17b193301e2deb
+Author: Danny Milosavljevic <gitea@fake.local>
+Date:   Sat Aug 29 16:20:27 2026 +0200
+
+    terminal: When DECSTBM is set up, only move scrolled-up parts into history if the region starts at the top row.
+    
+    Previously, even if one did a small scroll region, scrolled-out lines
+    would get added to the history and showing the user a corrupt history.
+    
+    Change it so that scrolled-out lines only get added to history if the
+    scrolling region starts at the top row of the visible area.
+
+diff --git a/terminal.c b/terminal.c
+index e6d913e3..c1befc8b 100644
+--- a/terminal.c
++++ b/terminal.c
+@@ -2895,6 +2895,163 @@ UNITTEST
+     fdm_destroy(fdm);
+ }
+ 
++UNITTEST
++{
++    const int scrollback_rows = 16;
++    const int term_rows = 5;
++    const int cols = 5;
++
++    struct fdm *fdm = fdm_init();
++    xassert(fdm != NULL);
++
++    struct terminal term = {
++        .fdm = fdm,
++        .rows = term_rows,
++        .cols = cols,
++        .normal = {
++            .rows = xcalloc(scrollback_rows, sizeof(term.normal.rows[0])),
++            .num_rows = scrollback_rows,
++            .num_cols = cols,
++        },
++        .grid = &term.normal,
++        .selection = {
++            .coords = {
++                .start = {-1, -1},
++                .end = {-1, -1},
++            },
++            .kind = SELECTION_NONE,
++            .auto_scroll = {
++                .fd = -1,
++            },
++        },
++    };
++
++#define populate_rows() do {                                            \
++        for (int i = 0; i < scrollback_rows; i++) {                     \
++            if (term.normal.rows[i] == NULL) {                          \
++                struct row *r = xcalloc(1, sizeof(*term.normal.rows[i])); \
++                r->cells = xcalloc(cols, sizeof(r->cells[0]));          \
++                term.normal.rows[i] = r;                                \
++            }                                                           \
++        }                                                               \
++    } while (0)
++
++    /* Screen rows carry 'A'..'E'; rows below the screen stay empty so we
++     * can detect anything leaking out of a confined scroll region. */
++#define tag_screen_rows() do {                                          \
++        for (int i = 0; i < term_rows; i++)                             \
++            term.grid->rows[i]->cells[0].wc = U'0' + i;                 \
++    } while (0)
++
++#define assert_screen_untagged_outside(...) do {                        \
++        for (int i = term_rows; i < scrollback_rows; i++)               \
++            xassert(term.grid->rows[i]->cells[0].wc == 0);              \
++    } while (0)
++
++    /*
++     * Test case 1 - confined scroll up: content must rotate inside the
++     * region, the top line of the region must be discarded, and nothing
++     * may be written outside the screen (in particular not into the
++     * scrollback).
++     */
++    populate_rows();
++    tag_screen_rows();
++    term.normal.offset = 0;
++    term.normal.view = 0;
++    term.grid->cur_row = term.grid->rows[0];
++    term.scroll_region = (struct scroll_region){.start = 1, .end = 5};
++
++    term_scroll_partial(&term, term.scroll_region, 1);
++
++    xassert(term.normal.offset == 0);
++    xassert(term.grid->rows[0]->cells[0].wc == U'0');      /* non-scrolling */
++    xassert(term.grid->rows[1]->cells[0].wc == U'2');      /* rotated up */
++    xassert(term.grid->rows[2]->cells[0].wc == U'3');
++    xassert(term.grid->rows[3]->cells[0].wc == U'4');
++    xassert(term.grid->rows[4]->cells[0].wc == 0);         /* scrolled in, erased */
++    assert_screen_untagged_outside();
++
++    /*
++     * Test case 2 - confined scroll down: same, mirrored; must not
++     * consume scrollback lines either.
++     */
++    populate_rows();
++    tag_screen_rows();
++    term.normal.offset = 0;
++    term.normal.view = 0;
++    term.grid->cur_row = term.grid->rows[0];
++    term.scroll_region = (struct scroll_region){.start = 1, .end = 5};
++
++    term_scroll_reverse_partial(&term, term.scroll_region, 1);
++
++    xassert(term.normal.offset == 0);
++    xassert(term.grid->rows[0]->cells[0].wc == U'0');
++    xassert(term.grid->rows[1]->cells[0].wc == 0);         /* scrolled in, erased */
++    xassert(term.grid->rows[2]->cells[0].wc == U'1');      /* rotated down */
++    xassert(term.grid->rows[3]->cells[0].wc == U'2');
++    xassert(term.grid->rows[4]->cells[0].wc == U'3');
++    assert_screen_untagged_outside();
++
++    /*
++     * Test case 3 - region including the top of the screen: must keep
++     * pushing the scrolled-out line into scrollback.
++     */
++    populate_rows();
++    tag_screen_rows();
++    term.normal.offset = 0;
++    term.normal.view = 0;
++    term.grid->cur_row = term.grid->rows[0];
++    term.scroll_region = (struct scroll_region){.start = 0, .end = 5};
++
++    term_scroll_partial(&term, term.scroll_region, 1);
++
++    xassert(term.normal.offset == 1);
++    /* Newest scrollback line is the old top screen line. */
++    xassert(term.grid->rows[0]->cells[0].wc == U'0');
++    xassert(term.grid->rows[term.normal.offset + 0]->cells[0].wc == U'1');
++    xassert(term.grid->rows[term.normal.offset + 1]->cells[0].wc == U'2');
++    xassert(term.grid->rows[term.normal.offset + 2]->cells[0].wc == U'3');
++    xassert(term.grid->rows[term.normal.offset + 3]->cells[0].wc == U'4');
++    xassert(term.grid->rows[term.normal.offset + 4]->cells[0].wc == 0);
++
++    /*
++     * Test case 4 - full-screen reverse scroll with an empty
++     * scrollback: the offset must not move (decrementing it would
++     * rotate unallocated rows from above the screen into the
++     * visible screen).
++     */
++    populate_rows();
++    tag_screen_rows();
++    term.normal.offset = 0;
++    term.normal.view = 0;
++    term.grid->cur_row = term.grid->rows[0];
++    term.scroll_region = (struct scroll_region){.start = 0, .end = 5};
++
++    /* Mirror the alternate screen / empty history: rows above the
++     * screen top (ring slots outside the screen) are unallocated. */
++    for (int i = term_rows; i < scrollback_rows; i++) {
++        grid_row_free(term.grid->rows[i]);
++        term.grid->rows[i] = NULL;
++    }
++
++    term_scroll_reverse_partial(&term, term.scroll_region, 1);
++
++    xassert(term.normal.offset == 0);
++    xassert(term.grid->rows[0]->cells[0].wc == 0);         /* scrolled in, erased */
++    xassert(term.grid->rows[1]->cells[0].wc == U'0');      /* rotated down */
++    xassert(term.grid->rows[2]->cells[0].wc == U'1');
++    xassert(term.grid->rows[3]->cells[0].wc == U'2');
++    xassert(term.grid->rows[4]->cells[0].wc == U'3');
++    for (int i = term_rows; i < scrollback_rows; i++)
++        xassert(term.grid->rows[i] == NULL);               /* still untouched */
++
++    /* Cleanup */
++    for (int i = 0; i < scrollback_rows; i++)
++        grid_row_free(term.normal.rows[i]);
++    free(term.normal.rows);
++    fdm_destroy(fdm);
++}
++
+ int
+ term_row_rel_to_abs(const struct terminal *term, int row)
+ {
+@@ -3087,33 +3244,51 @@ term_scroll_partial(struct terminal *term, struct scroll_region region, int rows
+ 
+     sixel_scroll_up(term, rows);
+ 
+-    /* How many lines from the scrollback start is the current viewport? */
+-    int view_sb_start_distance = grid_row_abs_to_sb(
+-        term->grid, term->rows, term->grid->view);
++    if (region.start == 0) {
++        /* Scroll region includes the top of the screen: lines scrolled
++         * out enter scrollback (as in xterm, VTE and kitty). */
+ 
+-    bool view_follows = term->grid->view == term->grid->offset;
+-    term->grid->offset += rows;
+-    term->grid->offset &= term->grid->num_rows - 1;
++        /* How many lines from the scrollback start is the current viewport? */
++        int view_sb_start_distance = grid_row_abs_to_sb(
++            term->grid, term->rows, term->grid->view);
+ 
+-    if (likely(view_follows)) {
+-        term_damage_scroll(term, DAMAGE_SCROLL, region, rows);
+-        selection_view_down(term, term->grid->offset);
+-        term->grid->view = term->grid->offset;
+-    } else if (unlikely(rows > view_sb_start_distance)) {
+-        /* Part of current view is being scrolled out */
+-        int new_view = grid_row_sb_to_abs(term->grid, term->rows, 0);
+-        selection_view_down(term, new_view);
+-        cmd_scrollback_down(term, rows - view_sb_start_distance);
++        bool view_follows = term->grid->view == term->grid->offset;
++        term->grid->offset += rows;
++        term->grid->offset &= term->grid->num_rows - 1;
++
++        if (likely(view_follows)) {
++            term_damage_scroll(term, DAMAGE_SCROLL, region, rows);
++            selection_view_down(term, term->grid->offset);
++            term->grid->view = term->grid->offset;
++        } else if (unlikely(rows > view_sb_start_distance)) {
++            /* Part of current view is being scrolled out */
++            int new_view = grid_row_sb_to_abs(term->grid, term->rows, 0);
++            selection_view_down(term, new_view);
++            cmd_scrollback_down(term, rows - view_sb_start_distance);
++        }
++
++        /* Bottom non-scrolling region */
++        for (int i = term->rows - 1; i >= region.end; i--)
++            grid_swap_row(term->grid, i - rows, i);
++    } else {
++        /* Scroll region confined below the top of the screen: rotate the
++         * lines inside the region only. Lines scrolled out of the region
++         * are discarded, and scrollback is left untouched -- the behavior
++         * of xterm (ScrnDeleteLine saves only when the region includes
++         * the top row), VTE ("Don't add to history") and kitty
++         * (add_to_history only when margin_top == 0).
++         *
++         * Advancing the grid offset here, as the top-scrolling case does,
++         * would grow the scrollback and strand the evicted rows in the
++         * newly allocated history slots. */
++
++        if (term->grid->view == term->grid->offset)
++            term_damage_scroll(term, DAMAGE_SCROLL, region, rows);
++
++        for (int i = region.start; i < region.end - rows; i++)
++            grid_swap_row(term->grid, i, i + rows);
+     }
+ 
+-    /* Top non-scrolling region. */
+-    for (int i = region.start - 1; i >= 0; i--)
+-        grid_swap_row(term->grid, i - rows, i);
+-
+-    /* Bottom non-scrolling region */
+-    for (int i = term->rows - 1; i >= region.end; i--)
+-        grid_swap_row(term->grid, i - rows, i);
+-
+     /* Erase scrolled in lines */
+     for (int r = region.end - rows; r < region.end; r++) {
+         struct row *row = grid_row_and_alloc(term->grid, r);
+@@ -3159,52 +3334,20 @@ term_scroll_reverse_partial(struct terminal *term,
+             selection_scroll_down(term, rows);
+     }
+ 
+-    /* Unallocate scrolled out lines */
+-    for (int r = region.end - rows; r < region.end; r++) {
+-        const int abs_r = grid_row_absolute(term->grid, r);
+-        struct row *row = term->grid->rows[abs_r];
++        sixel_scroll_down(term, rows);
+ 
+-        grid_row_free(row);
+-        term->grid->rows[abs_r] = NULL;
++        if (term->grid->view == term->grid->offset)
++            term_damage_scroll(term, DAMAGE_SCROLL_REVERSE, region, rows);
+ 
+-        if (term->render.last_cursor.row == row)
+-            term->render.last_cursor.row = NULL;
+-    }
++    /* Rotate lines inside the region downwards without touching
++     * grid->offset: reverse scrolling never interacts with the
++     * scrollback. Decrementing the offset here would, on the
++     * alternate screen or with an empty scrollback, rotate
++     * unallocated (NULL) rows from above the screen into the
++     * visible screen rows. */
++        for (int i = region.end - 1; i >= region.start + rows; i--)
++            grid_swap_row(term->grid, i, i - rows);
+ 
+-    sixel_scroll_down(term, rows);
+-
+-    const bool view_follows = term->grid->view == term->grid->offset;
+-    term->grid->offset -= rows;
+-    term->grid->offset += term->grid->num_rows;
+-    term->grid->offset &= term->grid->num_rows - 1;
+-
+-    /* How many lines from the scrollback start is the current viewport? */
+-    const int view_sb_start_distance = grid_row_abs_to_sb(
+-        term->grid, term->rows, term->grid->view);
+-    const int offset_sb_start_distance = grid_row_abs_to_sb(
+-        term->grid, term->rows, term->grid->offset);
+-
+-    xassert(term->grid->offset >= 0);
+-    xassert(term->grid->offset < term->grid->num_rows);
+-
+-    if (view_follows) {
+-        term_damage_scroll(term, DAMAGE_SCROLL_REVERSE, region, rows);
+-        selection_view_up(term, term->grid->offset);
+-        term->grid->view = term->grid->offset;
+-    } else if (unlikely(view_sb_start_distance > offset_sb_start_distance)) {
+-        /* Part of current view is being scrolled out */
+-        int new_view = term->grid->offset;
+-        selection_view_up(term, new_view);
+-        term->grid->view = new_view;
+-    }
+-
+-    /* Bottom non-scrolling region */
+-    for (int i = region.end + rows; i < term->rows + rows; i++)
+-        grid_swap_row(term->grid, i, i - rows);
+-
+-    /* Top non-scrolling region */
+-    for (int i = 0 + rows; i < region.start + rows; i++)
+-        grid_swap_row(term->grid, i, i - rows);
+ 
+     /* Erase scrolled in lines */
+     for (int r = region.start; r < region.start + rows; r++) {
+@@ -3212,9 +3355,6 @@ term_scroll_reverse_partial(struct terminal *term,
+         erase_line(term, row);
+     }
+ 
+-    if (unlikely(view_sb_start_distance > offset_sb_start_distance))
+-        term_damage_view(term);
+-
+     term->grid->cur_row = grid_row(term->grid, term->grid->cursor.point.row);
+ 
+ #if defined(_DEBUG)

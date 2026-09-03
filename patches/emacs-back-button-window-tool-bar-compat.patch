@@ -1,0 +1,14 @@
+diff -ru orig/4wzqz0cf0hx504chkh8rispls0rg094d-emacs-back-button-0.6.6-checkout/back-button.el 4wzqz0cf0hx504chkh8rispls0rg094d-emacs-back-button-0.6.6-checkout/back-button.el
+--- orig/4wzqz0cf0hx504chkh8rispls0rg094d-emacs-back-button-0.6.6-checkout/back-button.el	2025-02-11 23:27:49.899305806 +0100
++++ 4wzqz0cf0hx504chkh8rispls0rg094d-emacs-back-button-0.6.6-checkout/back-button.el	2025-02-11 23:28:47.821920096 +0100
+@@ -490,9 +490,7 @@
+                      ;;               this-command
+                      ;;               (memq this-command back-button-commands)))
+ 
+-  ;; Note, this seems to not work on some platforms, eg Cocoa
+-  (define-key global-map (kbd "<tool-bar> <S-back-button>")    'back-button-local-backward)
+-  (define-key global-map (kbd "<tool-bar> <S-forward-button>") 'back-button-local-forward))
++  )
+ 
+ ;;; lighter
+ 

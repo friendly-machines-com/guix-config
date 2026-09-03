@@ -1,0 +1,71 @@
+From 5c1b2cccb449f8afb6ea7e89db21abc1af42a222 Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 01:08:36 +0000
+Subject: [PATCH] client/wayland: Drop Ghostty preedit workaround
+
+The workaround sent an extra zwp_input_method_v2_commit() in done_v2
+every time preedit was hidden.  This consumed the current serial,
+risking that a subsequent real commit before the next done event would
+be silently dropped by the compositor per protocol spec.
+
+The workaround was only needed for Ghostty's text_input_v3
+implementation and ran unconditionally for all clients.
+---
+ client/wayland/ibuswaylandim.c | 20 --------------------
+ 1 file changed, 20 deletions(-)
+
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index 8b1e7b53..5b87fda6 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -163,7 +163,6 @@ struct _IBusWaylandIMPrivate
+     guint preedit_mode;
+     IBusModifierType modifiers;
+     gboolean is_virtual_latch_state;
+-    gboolean hiding_preedit_text;
+     IBusInputHints ibus_hints;
+     IBusInputPurpose ibus_purpose;
+ 
+@@ -1095,7 +1094,6 @@ _context_show_preedit_text_cb (IBusInputContext *context,
+                 cursor);
+         zwp_input_method_v2_commit (priv->seat->input_method_v2,
+                                     priv->im_serial);
+-        priv->hiding_preedit_text = FALSE;
+         break;
+     default:
+         g_assert_not_reached ();
+@@ -1124,7 +1122,6 @@ _context_hide_preedit_text_cb (IBusInputContext *context,
+                                                  "", 0, 0);
+         zwp_input_method_v2_commit (priv->seat->input_method_v2,
+                                     priv->im_serial);
+-        priv->hiding_preedit_text = TRUE;
+         break;
+     default:
+         g_assert_not_reached ();
+@@ -2994,23 +2991,6 @@ input_method_done_v2 (void                       *data,
+     priv->im_serial++;
+     input_method.u.input_method_v2 = input_method_v2;
+ 
+-    /* Ghostty requires to receive the 'im_preedit_end' signal with
+-     * zwp_input_method_v2_set_preedit_string() to recover the 'im_commit'
+-     * signal but GtkIMContextWayland::text_input_preedit_apply() can emit
+-     * the 'preedit-end' signal in case that
+-     * GtkIMContextWayland->current_preedit.text is %NULL and it happens
+-     * if zwp_text_input_v3_listener.done is emitted.
+-     * To make sure zwp_text_input_v3_listener.done,
+-     * zwp_input_method_v2_commit() is called after the im_serial is bumped.
+-     */
+-    if (priv->hiding_preedit_text &&
+-        !priv->seat->pending_activate &&
+-        priv->seat->active) {
+-        zwp_input_method_v2_commit (priv->seat->input_method_v2,
+-                                    priv->im_serial);
+-        priv->hiding_preedit_text = FALSE;
+-    }
+-
+     if (priv->seat->pending_activate && !priv->seat->active) {
+         priv->seat->active = TRUE;
+         input_method_activate (data, &input_method, NULL);
+-- 
+2.54.0
+

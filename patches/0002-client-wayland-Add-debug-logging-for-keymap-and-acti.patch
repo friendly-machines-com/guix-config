@@ -1,0 +1,241 @@
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index d4fd2db8..cbd97b67 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -370,6 +370,11 @@ ibus_wayland_im_key (IBusWaylandIM *wlim,
+         if (priv->seat->has_keymap) {
+             zwp_virtual_keyboard_v1_key (priv->seat->virtual_keyboard,
+                                          time, key, state);
++        } else if (priv->verbose) {
++            fprintf (priv->log,
++                     "key DROPPED: key=%u state=%u (has_keymap=FALSE)\n",
++                     key, state);
++            fflush (priv->log);
+         }
+         break;
+     default:
+@@ -1121,6 +1126,16 @@ input_method_keyboard_keymap (void                      *data,
+     }
+     priv = ibus_wayland_im_get_instance_private (wlim);
+ 
++    if (priv->verbose) {
++        fprintf (priv->log,
++                 "keyboard_keymap: format=%u fd=%d size=%u has_keymap=%d"
++                 " keymap=%p state=%p state_system=%p\n",
++                 format, fd, size, priv->seat->has_keymap,
++                 (void *)priv->keymap, (void *)priv->state,
++                 (void *)priv->state_system);
++        fflush (priv->log);
++    }
++
+     /* wlroots/types/wlr_virtual_keyboard_v1.c:virtual_keyboard_keymap()
+      * calls wl_client_post_no_memory(client) in case mmap() is failed with
+      * `size` = 0.
+@@ -1134,6 +1149,12 @@ input_method_keyboard_keymap (void                      *data,
+         priv->seat->has_keymap = TRUE;
+     }
+     if (priv->keymap && priv->state && priv->state_system) {
++        if (priv->verbose) {
++            fprintf (priv->log,
++                     "keyboard_keymap: early return, has_keymap=%d\n",
++                     priv->seat->has_keymap);
++            fflush (priv->log);
++        }
+         close (fd);
+         return;
+     }
+@@ -1288,6 +1309,12 @@ _process_key_event_done (GObject      *object,
+                                            event->state,
+                                            event->sym,
+                                            retval);
++    } else if (priv->verbose) {
++        fprintf (priv->log,
++                 "process_key_event_done: DROPPED key=%u"
++                 " (ibuscontext=NULL after async)\n",
++                 event->key);
++        fflush (priv->log);
+     }
+     /* Check retral from ibus_wayland_im_post_key() */
+     if (priv->ibuscontext && !retval) {
+@@ -1661,10 +1688,22 @@ input_method_keyboard_key (void                      *data,
+ 
+     g_return_if_fail (IBUS_IS_WAYLAND_IM (wlim));
+     priv = ibus_wayland_im_get_instance_private (wlim);
+-    if (!priv->state)
++    if (!priv->state) {
++        if (priv->verbose) {
++            fprintf (priv->log,
++                     "keyboard_key: DROPPED key=%u (no xkb state)\n", key);
++            fflush (priv->log);
++        }
+         return;
++    }
+ 
+     if (!priv->ibuscontext) {
++        if (priv->verbose) {
++            fprintf (priv->log,
++                     "keyboard_key: no ibuscontext, direct post key=%u\n",
++                     key);
++            fflush (priv->log);
++        }
+         gboolean retval = ibus_wayland_im_post_key (wlim,
+                                                     key,
+                                                     priv->modifiers,
+@@ -1764,6 +1803,10 @@ input_method_keyboard_modifiers (void                      *data,
+             zwp_virtual_keyboard_v1_modifiers (priv->seat->virtual_keyboard,
+                                                mods_depressed, mods_latched,
+                                                mods_locked, group);
++        } else if (priv->verbose) {
++            fprintf (priv->log,
++                     "modifiers DROPPED (has_keymap=FALSE)\n");
++            fflush (priv->log);
+         }
+         break;
+     default:
+@@ -2028,6 +2071,11 @@ input_method_activate (void                               *data,
+     if (context)
+         priv->im_serial = 0;
+ 
++    if (priv->verbose) {
++        fprintf (priv->log, "activate: version=%d\n", priv->version);
++        fflush (priv->log);
++    }
++
+     switch (priv->version) {
+     case INPUT_METHOD_V1:
+         zwp_input_method_context_v1_add_listener (context,
+@@ -2052,6 +2100,15 @@ input_method_activate (void                               *data,
+                 priv->seat->keyboard_v2,
+                 &keyboard_listener_v2,
+                 wlim);
++        if (priv->verbose) {
++            fprintf (priv->log,
++                     "activate: created virtual_keyboard=%p"
++                     " keyboard_v2=%p has_keymap=%d\n",
++                     (void *)priv->seat->virtual_keyboard,
++                     (void *)priv->seat->keyboard_v2,
++                     priv->seat->has_keymap);
++            fflush (priv->log);
++        }
+         break;
+     default:
+         g_assert_not_reached ();
+@@ -2135,6 +2192,11 @@ input_method_deactivate (void                               *data,
+         g_clear_object (&priv->surrounding_text);
+ #endif
+ 
++    if (priv->verbose) {
++        fprintf (priv->log, "deactivate: version=%d\n", priv->version);
++        fflush (priv->log);
++    }
++
+     switch (priv->version) {
+     case INPUT_METHOD_V1:
+         if (priv->context) {
+@@ -2148,6 +2210,14 @@ input_method_deactivate (void                               *data,
+                              zwp_input_method_keyboard_grab_v2_release);
+         }
+         if (priv->seat->virtual_keyboard) {
++            if (priv->verbose) {
++                fprintf (priv->log,
++                         "deactivate: destroying virtual_keyboard=%p"
++                         " has_keymap=%d\n",
++                         (void *)priv->seat->virtual_keyboard,
++                         priv->seat->has_keymap);
++                fflush (priv->log);
++            }
+             g_clear_pointer (&priv->seat->virtual_keyboard,
+                              zwp_virtual_keyboard_v1_destroy);
+         }
+@@ -2336,6 +2406,17 @@ input_method_done_v2 (void                       *data,
+     priv->im_serial++;
+     input_method.u.input_method_v2 = input_method_v2;
+ 
++    if (priv->verbose) {
++        fprintf (priv->log,
++                 "done_v2: serial=%u active=%d pending_activate=%d"
++                 " pending_deactivate=%d has_keymap=%d\n",
++                 priv->im_serial, priv->seat->active,
++                 priv->seat->pending_activate,
++                 priv->seat->pending_deactivate,
++                 priv->seat->has_keymap);
++        fflush (priv->log);
++    }
++
+     /* Ghostty requires to receive the 'im_preedit_end' signal with
+      * zwp_input_method_v2_set_preedit_string() to recover the 'im_commit'
+      * signal but GtkIMContextWayland::text_input_preedit_apply() can emit
+@@ -2369,6 +2450,17 @@ static void
+ input_method_unavailable_v2 (void                       *data,
+                              struct zwp_input_method_v2 *input_method_v2)
+ {
++    IBusWaylandIM *wlim = data;
++    IBusWaylandIMPrivate *priv;
++
++    if (!IBUS_IS_WAYLAND_IM (wlim))
++        return;
++    priv = ibus_wayland_im_get_instance_private (wlim);
++    if (priv->verbose) {
++        fprintf (priv->log, "unavailable_v2: input method declared unavailable"
++                 " by compositor\n");
++        fflush (priv->log);
++    }
+ }
+ 
+ 
+diff --git a/client/wayland/main.c b/client/wayland/main.c
+index 0b1050b0..e8780462 100644
+--- a/client/wayland/main.c
++++ b/client/wayland/main.c
+@@ -60,7 +60,8 @@ main (gint    argc,
+         g_printerr ("Cannot open Wayland display\n");
+         return EXIT_FAILURE;
+     }
+-    wlim = ibus_wayland_im_new ("wl_display", display, "bus", bus, NULL);
++    wlim = ibus_wayland_im_new ("wl_display", display, "bus", bus,
++                                "verbose", TRUE, NULL);
+     g_return_val_if_fail (wlim, EXIT_FAILURE);
+ 
+     source = ibus_wayland_source_new (display);
+diff --git a/ui/gtk3/application.vala b/ui/gtk3/application.vala
+index dcabc892..4e7e891b 100644
+--- a/ui/gtk3/application.vala
++++ b/ui/gtk3/application.vala
+@@ -98,6 +98,11 @@ class Application {
+                                       string         signal_name,
+                                       Variant        parameters) {
+         debug("signal_name = %s", signal_name);
++        if (m_log != null) {
++            m_log.printf("bus_name_acquired_cb: m_enable_wayland_im=%s\n",
++                         m_enable_wayland_im.to_string());
++            m_log.flush();
++        }
+         if (m_panel != null) {
+             // ibus_object_destroy() is needed because g_object_unref() is
+             // called by ibus_service_unregister_cb() but another
+diff --git a/ui/gtk3/panel.vala b/ui/gtk3/panel.vala
+index a13b8773..8a190435 100644
+--- a/ui/gtk3/panel.vala
++++ b/ui/gtk3/panel.vala
+@@ -1008,6 +1008,21 @@ class Panel : IBus.PanelService {
+ 
+     private void check_wayland() {
+         string message = null;
++        if (m_log != null) {
++            m_log.printf("check_wayland: m_is_wayland=%s"
++                         + " m_is_wayland_im=%s is_gnome=%s\n",
++                         m_is_wayland.to_string(),
++                         m_is_wayland_im.to_string(),
++                         is_gnome().to_string());
++            m_log.flush();
++        } else {
++            stderr.printf("check_wayland: m_is_wayland=%s"
++                          + " m_is_wayland_im=%s is_gnome=%s"
++                          + " (m_log not set yet)\n",
++                          m_is_wayland.to_string(),
++                          m_is_wayland_im.to_string(),
++                          is_gnome().to_string());
++        }
+         if (m_is_wayland && !m_is_wayland_im && !is_gnome()) {
+             var format =
+                     _("IBus should be called from the desktop session in " +

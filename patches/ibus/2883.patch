@@ -1,0 +1,39 @@
+From a9f5f2e0ce13682722828e48e0d120981fb9b3ae Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 00:49:25 +0000
+Subject: [PATCH] ui/gtk3: Fix NULL dereference in open_log when passwd lookup
+ fails
+
+getpwuid() returns NULL when the UID is not in /etc/passwd (e.g. in
+containers).  Dereferencing pw.pw_name without a NULL check crashes.
+Similarly, Environment.get_variable("USER") can return NULL if the
+variable is unset.
+
+Check for NULL before accessing either value.
+
+BUG=https://github.com/ibus/ibus/pull/2883
+---
+ ui/gtk3/application.vala | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/ui/gtk3/application.vala b/ui/gtk3/application.vala
+index dcabc892e..499a47185 100644
+--- a/ui/gtk3/application.vala
++++ b/ui/gtk3/application.vala
+@@ -210,9 +210,13 @@ class Application {
+                 Path.build_filename(directory, "wayland.log");
+         m_log = FileStream.open(path, "w");
+         unowned Posix.Passwd? pw = Posix.getpwuid(Posix.getuid());
+-        m_user = pw.pw_name.substring(0, 6);
+-        if (m_user == null)
+-            m_user = GLib.Environment.get_variable("USER").substring(0, 6);
++        if (pw != null)
++            m_user = pw.pw_name.substring(0, 6);
++        if (m_user == null) {
++            var user_env = GLib.Environment.get_variable("USER");
++            if (user_env != null)
++                m_user = user_env.substring(0, 6);
++        }
+         if (m_user == null)
+             m_user = "UNKNOW";
+         GLib.DateTime now = new GLib.DateTime.now_local();

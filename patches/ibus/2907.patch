@@ -1,0 +1,122 @@
+From bcb422076c52471856e3b9b30884d2881ddac3e4 Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Fri, 1 May 2026 03:31:02 +0200
+Subject: [PATCH] ui/gtk3: avoid GLib spawn helper when starting ibus-daemon
+ for Wayland IM
+
+When ibus-ui-gtk3 is started with --enable-wayland-im --exec-daemon,
+it starts ibus-daemon if no bus is already available.  This currently
+uses g_spawn_async() with G_SPAWN_DO_NOT_REAP_CHILD.
+
+On systems where GLib implements g_spawn_async() through its spawn
+helper, the helper process can exit before ibus-daemon reaches main().
+ibus-daemon then observes getppid() == 1 and exits through its existing
+parent-death check when it was not started with --daemonize.
+
+The result is that ibus-daemon briefly creates the bus socket/address
+file, but exits before ibus-ui-gtk3 can complete the connection.  Clients
+then see the connection reset.
+
+Avoid the GLib spawn helper.
+This keeps ibus-daemon as a direct child of ibus-ui-gtk3,
+preserving the assumption made by ibus-daemon's parent check.  A child
+watch is still installed so the PID is reaped and the startup wait loop
+can terminate if ibus-daemon exits.
+
+This only changes the Wayland IM auto-daemon path:
+  ibus-ui-gtk3 --enable-wayland-im --exec-daemon
+
+It does not change normal ibus-daemon startup, the XIM path, engine
+startup, or the panel behavior after the bus is connected.
+
+tools/main.vala in the direct daemon startup path also does the same:
+that code avoids GLib.Process.spawn_async() and execs ibus-daemon
+directly because the GLib spawn path can leave ibus-daemon with an
+unexpected parent.
+---
+ ui/gtk3/application.vala | 58 +++++++++++++++++++++++++++++-----------
+ 1 file changed, 43 insertions(+), 15 deletions(-)
+
+diff --git a/ui/gtk3/application.vala b/ui/gtk3/application.vala
+index dcabc892e..bc3a75376 100644
+--- a/ui/gtk3/application.vala
++++ b/ui/gtk3/application.vala
+@@ -246,23 +246,44 @@ class Application {
+         m_log.flush();
+     }
+ 
+-    private static bool run_ibus_daemon() {
++    private static GLib.Pid run_ibus_daemon() {
++        string[] daemon_args = {};
++        if (m_daemon_args != null && m_daemon_args != "") {
++            try {
++                GLib.Shell.parse_argv(m_daemon_args, out daemon_args);
++            } catch (GLib.ShellError e) {
++                var message = "Failed to parse daemon arguments: %s".printf(
++                        e.message);
++                m_log.printf("ibus-daemon error: %s\n", message);
++                warning("%s\n", message);
++                return 0;
++            }
++        }
++
+         string[] args = { "ibus-daemon" };
+-        foreach (var arg in m_daemon_args.split(" "))
++        foreach (var arg in daemon_args)
+             args += arg;
+-        GLib.Pid child_pid = 0;
+-        try {
+-            GLib.Process.spawn_async (null, args, null,
+-                                      GLib.SpawnFlags.DO_NOT_REAP_CHILD
+-                                      | GLib.SpawnFlags.SEARCH_PATH,
+-                                      null,
+-                                      out child_pid);
+-        } catch (GLib.SpawnError e) {
+-            m_log.printf("ibus-daemon error: %s\n", e.message);
+-            warning("%s\n", e.message);
+-            return false;
++        /*
++         * Launch ibus-daemon without GLib.Process.spawn_async().
++         * On some systems g_spawn_async() uses a short-lived helper process,
++         * which reparents ibus-daemon to PID 1 before it reaches main().
++         * ibus-daemon then treats that as parent death and exits.
++         */
++        GLib.Pid child_pid = Posix.fork();
++        if (child_pid < 0) {
++            var message = "fork failed: %s".printf(Posix.strerror(Posix.errno));
++            m_log.printf("ibus-daemon error: %s\n", message);
++            warning("%s\n", message);
++            return 0;
+         }
+-        return true;
++        if (child_pid == 0) {
++            Posix.execvp("ibus-daemon", args);
++            var message = "execvp(ibus-daemon) failed: %s".printf(
++                    Posix.strerror(Posix.errno));
++            warning("%s\n", message);
++            Posix._exit(127);
++        }
++        return child_pid;
+     }
+ 
+     private static void make_wayland_im() {
+@@ -298,11 +319,18 @@ class Application {
+         bus = new IBus.Bus();
+         GLib.MainLoop? loop = null;
+         if (!bus.is_connected() && m_exec_daemon) {
++            GLib.Pid daemon_pid = 0;
+             m_bus_connected_id = bus.connected.connect((bus) => {
+                 if (loop != null)
+                     loop.quit();
+             });
+-            if (run_ibus_daemon()) {
++            daemon_pid = run_ibus_daemon();
++            if (daemon_pid > 0) {
++                GLib.ChildWatch.add(daemon_pid, (pid, status) => {
++                    GLib.Process.close_pid(pid);
++                    if (loop != null)
++                        loop.quit();
++                });
+                 if (!bus.is_connected()) {
+                     loop = new GLib.MainLoop();
+                     loop.run();

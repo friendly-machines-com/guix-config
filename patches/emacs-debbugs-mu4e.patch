@@ -1,0 +1,138 @@
+From:   Ricardo Wurmus
+Subject:    [PATCH] [debbugs] Add mu4e support.
+Date:   Sun, 23 Apr 2017 12:05:17 +0200
+User-agent: mu4e 0.9.18; emacs 25.1.1
+
+Hi,
+
+this patch is for the debbugs.el EPLA package.  It adds the mail client
+“mu4e” as a debbugs-gnu mail backend.
+
+When “debbugs-gnu-mail-backend” is set to “'mu4e”, visiting a bug will
+download the bug’s mbox file, turn it into a separate Maildir tree under
+“mu4e-maildir” called “emacs-debbugs.1234” where “1234” is the bug id,
+runs “mu index” (synchronously) to update the mail database, and then
+shows the emails as usual with mu4e.
+
+I’ve been using this patch for a while with satisfactory results.
+
+--
+Ricardo
+
+GPG: BCA6 89B6 3655 3801 C3C6  2150 197A 5888 235F ACAC
+https://elephly.net
+
+From: Ricardo Wurmus <address@hidden>
+Date: Mon, 10 Apr 2017 09:33:51 +0200
+Subject: [PATCH] [debbugs] Add mu4e support.
+
+* packages/debbugs/debbugs-gnu.el (debbugs-gnu-mail-backend,
+debbugs-gnu-select-report): Handle "mu4e" option.
+(debbugs--extract-mbox-to-maildir, debbugs-read-emacs-bug-with-mu4e):
+New procedures.
+
+--- orig/debbugs-0.44/debbugs-gnu.el	2025-03-07 11:03:08.000000000 +0100
++++ debbugs-0.44/debbugs-gnu.el	2025-03-22 13:07:57.404222773 +0100
+@@ -209,9 +209,13 @@
+ (autoload 'message-goto-body "message")
+ (autoload 'message-make-from "message")
+ (autoload 'message-narrow-to-headers "message")
++(autoload 'message-fetch-field "message")
++(autoload 'nndoc-mbox-article-begin "nndoc")
++(autoload 'nnmail-write-region "nnmail")
+ (autoload 'rmail-get-new-mail "rmail")
+ (autoload 'rmail-show-message "rmail")
+ (autoload 'rmail-summary "rmailsum")
++(autoload 'mu4e-headers-search "mu4e-headers")
+ (autoload 'vc-dir-hide-up-to-date "vc-dir")
+ (autoload 'vc-dir-mark "vc-dir")
+ (autoload 'vc-git-log-view-mode "vc-git")
+@@ -375,8 +379,8 @@
+ 
+ (defcustom debbugs-gnu-mail-backend 'gnus
+   "The email backend to use for reading bug report email exchange.
+-If this is `gnus', the default, use Gnus.
+-If this is `rmail', use Rmail instead."
++If this is `gnus', the default, use Gnus.  If this is `rmail',
++use Rmail.  If this is `mu4e', use Mu4e instead."
+   :type '(radio (function-item :tag "Use Gnus" gnus)
+ 		(function-item :tag "Use Rmail" rmail))
+   :version "25.1")
+@@ -1794,6 +1798,8 @@
+ 	(message "No bug reports in the current buffer"))
+        ((eq debbugs-gnu-mail-backend 'rmail)
+ 	(debbugs-gnu-select-current-bugs-with-rmail ids))
++       ((eq debbugs-gnu-mail-backend 'mu4e)
++	(debbugs-gnu-select-current-bugs-with-mu4e ids))
+        ((eq debbugs-gnu-mail-backend 'gnus)
+ 	(debbugs-gnu-select-current-bugs-with-gnus ids))
+        (t (error "No valid mail backend specified"))))))
+@@ -1863,10 +1869,68 @@
+       (message "No bug report on the current line"))
+      ((eq debbugs-gnu-mail-backend 'rmail)
+       (debbugs-gnu-read-emacs-bug-with-rmail id status merged))
++     ((eq debbugs-gnu-mail-backend 'mu4e)
++      (debbugs-read-emacs-bug-with-mu4e id status merged))
+      ((eq debbugs-gnu-mail-backend 'gnus)
+       (debbugs-gnu-read-emacs-bug-with-gnus id status merged))
+      (t (error "No valid mail backend specified")))))
+ 
++(defun debbugs--extract-mbox-to-maildir (bug-str maildir start end)
++  (let* ((msgid (save-restriction
++                  (narrow-to-region start end)
++                  (message-fetch-field "Message-ID")))
++         (file  (concat bug-str "-" (secure-hash 'md5 msgid) ":2,"))
++         (path  (concat maildir "/cur/" file)))
++    (when (not (file-exists-p path))
++      (nnmail-write-region start end path))))
++
++(defun debbugs-read-emacs-bug-with-mu4e (id status merged)
++  "Read email exchange for debbugs bug ID.
++STATUS is the bug's status list.
++MERGED is the list of bugs merged with this one."
++  (let* ((bug-str (number-to-string id))
++         (tmpdir  "/tmp")
++         (mbox    (concat tmpdir "/bug-" bug-str ".mbox"))
++         (subdir  (concat "/emacs-debbugs." bug-str))
++         (maildir (concat mu4e-maildir subdir)))
++    ;; Create temporary maildir structure
++    (dolist (dir '("cur" "new" "tmp"))
++      (make-directory (concat maildir "/" dir) t))
++
++    ;; Download mbox for the given bug
++    (debbugs-get-mbox id 'mboxmaint mbox)
++
++    ;; Split mbox into individual mail files
++    (with-temp-buffer
++      (insert-file-contents mbox)
++      (goto-char (point-min))
++      (setq start (point))
++      (forward-char)
++      (while (nndoc-mbox-article-begin)
++        (setq end (point))
++        (debbugs--extract-mbox-to-maildir bug-str maildir start end)
++        (setq start end)
++        (forward-char))
++      ;; Save last email
++      (debbugs--extract-mbox-to-maildir bug-str maildir start (point-max)))
++
++    ;; Clean up
++    (delete-file mbox)
++
++    ;; We cannot use mu4e-update-index because it runs
++    ;; asynchronously.
++    (call-process-shell-command
++     (concat "mu index -m " mu4e-maildir))
++    (with-current-buffer (window-buffer (selected-window))
++      (let ((msgid (substring (cdr (assq 'msgid status)) 1 -1)))
++        (message msgid)
++        (mu4e-headers-search (concat "maildir:" subdir)
++                             nil nil nil msgid nil)))))
++
++(defun debbugs-gnu-select-current-bugs-with-mu4e (ids)
++  ;; FIXME
++  nil)
++
+ (defun debbugs-gnu-read-emacs-bug-with-rmail (id status merged)
+   "Read email exchange for debbugs bug ID.
+ STATUS is the bug's status list.

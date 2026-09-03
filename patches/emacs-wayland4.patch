@@ -1,0 +1,381 @@
+diff -ru orig/emacs-30.2/lisp/server.el emacs-30.2/lisp/server.el
+--- orig/emacs-30.2/lisp/server.el	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/lisp/server.el	2026-02-02 15:35:28.403165621 +0100
+@@ -937,6 +937,10 @@
+     ;; the DISPLAY environment on subprocesses.
+     (set-frame-parameter frame 'display
+                          (getenv-internal "DISPLAY" (process-get proc 'env)))
++    (set-frame-parameter frame 'child-env-display
++                         (getenv-internal "DISPLAY" (process-get proc 'env)))
++    (set-frame-parameter frame 'child-env-wayland-display
++                         (getenv-internal "WAYLAND_DISPLAY" (process-get proc 'env)))
+     frame))
+ 
+ (defun server-create-window-system-frame (display nowait proc parent-id
+@@ -966,6 +970,12 @@
+                (server--create-frame
+                 nowait proc
+                 `((display . ,display)
++                  (child-env-display
++                   . ,(getenv-internal "DISPLAY"
++                                       (process-get proc 'env)))
++                  (child-env-wayland-display
++                   . ,(getenv-internal "WAYLAND_DISPLAY"
++                                       (process-get proc 'env)))
+                   ,@(if parent-id
+                         `((parent-id . ,(string-to-number parent-id))))
+                   ,@parameters))
+@@ -993,6 +1003,8 @@
+ 
+ (defun server--create-frame (nowait proc parameters)
+   (add-to-list 'frame-inherited-parameters 'client)
++  (add-to-list 'frame-inherited-parameters 'child-env-display)
++  (add-to-list 'frame-inherited-parameters 'child-env-wayland-display)
+   ;; When `nowait' is set, flag frame as client-created, but use
+   ;; a dummy client.  This will prevent the frame from being deleted
+   ;; when emacsclient quits while also preventing
+diff -ru orig/emacs-30.2/src/callproc.c emacs-30.2/src/callproc.c
+--- orig/emacs-30.2/src/callproc.c	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/src/callproc.c	2026-02-02 15:21:03.851921207 +0100
+@@ -1742,16 +1742,22 @@
+   /* For DISPLAY try to get the values from the frame or the initial env.  */
+   if (strcmp (var, "DISPLAY") == 0)
+     {
+-#ifndef HAVE_PGTK
++#ifdef HAVE_PGTK
++      /* Use child-env-display, not display, because the display frame
++	 parameter on pgtk contains the Wayland display name, not X11 DISPLAY.  */
++      Lisp_Object display
++	= Fframe_parameter (NILP (frame) ? selected_frame : frame,
++			    Qchild_env_display);
++#else
+       Lisp_Object display
+ 	= Fframe_parameter (NILP (frame) ? selected_frame : frame, Qdisplay);
++#endif
+       if (STRINGP (display))
+ 	{
+ 	  *value    = SSDATA (display);
+ 	  *valuelen = SBYTES (display);
+ 	  return 1;
+ 	}
+-#endif /* !HAVE_PGTK */
+       /* If still not found, Look for DISPLAY in Vinitial_environment.  */
+       if (getenv_internal_1 (var, varlen, value, valuelen,
+ 			     Vinitial_environment))
+@@ -1759,6 +1765,26 @@
+     }
+ #endif /* !HAVE_ANDROID */
+ 
++#ifdef HAVE_PGTK
++  /* For WAYLAND_DISPLAY try to get the value from the frame or the initial env.  */
++  if (strcmp (var, "WAYLAND_DISPLAY") == 0)
++    {
++      Lisp_Object wayland_display
++	= Fframe_parameter (NILP (frame) ? selected_frame : frame,
++			    Qchild_env_wayland_display);
++      if (STRINGP (wayland_display))
++	{
++	  *value    = SSDATA (wayland_display);
++	  *valuelen = SBYTES (wayland_display);
++	  return 1;
++	}
++      /* If still not found, Look for WAYLAND_DISPLAY in Vinitial_environment.  */
++      if (getenv_internal_1 (var, varlen, value, valuelen,
++			     Vinitial_environment))
++	return *value ? 1 : 0;
++    }
++#endif /* HAVE_PGTK */
++
+   return 0;
+ }
+ 
+@@ -1853,6 +1879,9 @@
+ #ifndef HAVE_ANDROID
+     Lisp_Object display = Qnil;
+ #endif /* !HAVE_ANDROID */
++#ifdef HAVE_PGTK
++    Lisp_Object wayland_display = Qnil;
++#endif /* HAVE_PGTK */
+ 
+     new_length = 0;
+ 
+@@ -1867,6 +1896,13 @@
+ 	  /* DISPLAY is specified in process-environment.  */
+ 	  display = Qt;
+ #endif /* !HAVE_ANDROID */
++#ifdef HAVE_PGTK
++	if (strncmp (SSDATA (XCAR (tem)), "WAYLAND_DISPLAY", 15) == 0
++	    && (SDATA (XCAR (tem)) [15] == '\0'
++		|| SDATA (XCAR (tem)) [15] == '='))
++	  /* WAYLAND_DISPLAY is specified in process-environment.  */
++	  wayland_display = Qt;
++#endif /* HAVE_PGTK */
+ 	new_length++;
+       }
+ 
+@@ -1877,18 +1913,13 @@
+     /* If not provided yet, use the frame's DISPLAY.  */
+     if (NILP (display))
+       {
+-	Lisp_Object tmp = Fframe_parameter (selected_frame, Qdisplay);
+-
+ #ifdef HAVE_PGTK
+-	/* The only time GDK actually returns correct information is
+-	   when it's running under X Windows.  DISPLAY shouldn't be
+-	   set to a Wayland display either, since that's an X specific
+-	   variable.  */
+-	if (FRAME_WINDOW_P (SELECTED_FRAME ())
+-	    && strcmp (G_OBJECT_TYPE_NAME (FRAME_X_DISPLAY (SELECTED_FRAME ())),
+-		       "GdkX11Display"))
+-	  tmp = Qnil;
+-#endif /* HAVE_PGTK */
++	/* Use child-env-display, not display, because the display frame
++	   parameter on pgtk contains the Wayland display name, not X11 DISPLAY.  */
++	Lisp_Object tmp = Fframe_parameter (selected_frame, Qchild_env_display);
++#else
++	Lisp_Object tmp = Fframe_parameter (selected_frame, Qdisplay);
++#endif
+ 
+ 	if (!STRINGP (tmp) && CONSP (Vinitial_environment))
+ 	  /* If still not found, Look for DISPLAY in Vinitial_environment.  */
+@@ -1902,6 +1933,24 @@
+       }
+ #endif /* !HAVE_ANDROID */
+ 
++#ifdef HAVE_PGTK
++    /* If not provided yet, use the frame's WAYLAND_DISPLAY.  */
++    if (NILP (wayland_display))
++      {
++	Lisp_Object tmp = Fframe_parameter (selected_frame, Qchild_env_wayland_display);
++
++	if (!STRINGP (tmp) && CONSP (Vinitial_environment))
++	  /* If still not found, Look for WAYLAND_DISPLAY in Vinitial_environment.  */
++	  tmp = Fgetenv_internal (build_string ("WAYLAND_DISPLAY"),
++				  Vinitial_environment);
++	if (STRINGP (tmp))
++	  {
++	    wayland_display = tmp;
++	    new_length++;
++	  }
++      }
++#endif /* HAVE_PGTK */
++
+     /* new_length + 2 to include PWD and terminating 0.  */
+     env = new_env = xnmalloc (new_length + 2, sizeof *env);
+     record_unwind_protect_ptr (xfree, env);
+@@ -1920,6 +1969,16 @@
+       }
+ #endif /* !HAVE_ANDROID */
+ 
++#ifdef HAVE_PGTK
++    if (STRINGP (wayland_display))
++      {
++	char *vdata = xmalloc (sizeof "WAYLAND_DISPLAY=" + SBYTES (wayland_display));
++	record_unwind_protect_ptr (xfree, vdata);
++	lispstpcpy (stpcpy (vdata, "WAYLAND_DISPLAY="), wayland_display);
++	new_env = add_env (env, new_env, vdata);
++      }
++#endif /* HAVE_PGTK */
++
+     /* Overrides.  */
+     for (tem = Vprocess_environment;
+ 	 CONSP (tem) && STRINGP (XCAR (tem));
+@@ -2250,4 +2309,8 @@
+   DEFSYM (Qafter_insert_file_set_buffer_file_coding_system,
+ 	  "after-insert-file-set-buffer-file-coding-system");
+   DEFSYM (Qcoding_system_for_write, "coding-system-for-write");
++#ifdef HAVE_PGTK
++  DEFSYM (Qchild_env_wayland_display, "child-env-wayland-display");
++  DEFSYM (Qchild_env_display, "child-env-display");
++#endif /* HAVE_PGTK */
+ }
+diff -ru orig/emacs-30.2/src/pgtkfns.c emacs-30.2/src/pgtkfns.c
+--- orig/emacs-30.2/src/pgtkfns.c	1970-01-01 01:00:01.000000000 +0100
++++ emacs-30.2/src/pgtkfns.c	2026-02-02 12:09:08.735252496 +0100
+@@ -110,27 +110,7 @@
+   return dpyinfo;
+ }
+ 
+-/* On Wayland, even if without WAYLAND_DISPLAY, --display DISPLAY
+-   works, but gdk_display_get_name always return "wayland-0", which
+-   may be different from DISPLAY.  If with WAYLAND_DISPLAY, then it
+-   always returns WAYLAND_DISPLAY.  So pgtk Emacs is confused and
+-   enters multi display environment.  To workaround this situation,
+-   treat all the wayland-* as the same display.  */
+-static Lisp_Object
+-is_wayland_display (Lisp_Object dpyname)
+-{
+-  const char *p = SSDATA (dpyname);
+-  if (strncmp (p, "wayland-", 8) != 0)
+-    return Qnil;
+-  p += 8;
+-  do {
+-    if (*p < '0' || *p > '9')
+-      return Qnil;
+-  } while (*++p != '\0');
+-  return Qt;
+-}
+-
+-/* Return the X display structure for the display named NAME.
++/* Return the pgtk display structure for the display named NAME.
+    Open a new connection if necessary.  */
+ static struct pgtk_display_info *
+ pgtk_display_info_for_name (Lisp_Object name)
+@@ -139,18 +119,9 @@
+ 
+   CHECK_STRING (name);
+ 
+-  if (!NILP (is_wayland_display (name)))
+-    {
+-      for (dpyinfo = x_display_list; dpyinfo; dpyinfo = dpyinfo->next)
+-	if (!NILP (is_wayland_display (XCAR (dpyinfo->name_list_element))))
+-	  return dpyinfo;
+-    }
+-  else
+-    {
+-      for (dpyinfo = x_display_list; dpyinfo; dpyinfo = dpyinfo->next)
+-	if (!NILP (Fstring_equal (XCAR (dpyinfo->name_list_element), name)))
+-	  return dpyinfo;
+-    }
++  for (dpyinfo = x_display_list; dpyinfo; dpyinfo = dpyinfo->next)
++    if (!NILP (Fstring_equal (XCAR (dpyinfo->name_list_element), name)))
++      return dpyinfo;
+ 
+   /* Use this general default value to start with.  */
+   Vx_resource_name = Vinvocation_name;
+Subject: [PATCH] pgtk: fix popup windows getting blanked ~1s after display on HiDPI
+
+On Wayland with a GDK monitor scale factor != 1 (HiDPI, fractional
+scaling), newly displayed popup/child frames briefly render correctly
+and then get replaced by background color until the user triggers a
+redraw.  Thereafter only cursor-adjacent regions repaint.
+
+Root cause
+----------
+Each pgtk frame starts a 1-second ATIMER_CONTINUOUS in
+`update_watched_scale_factor' (src/pgtkfns.c).  The watcher compares
+FRAME_SCALE_FACTOR (f) against `watched_scale_factor', which is
+hard-initialised to 1.0 at frame creation.  On any monitor with scale
+!= 1, the first tick of the atimer sees a "change" and calls
+
+    pgtk_cr_update_surface_desired_size (f, w, h, /*force=*/true);
+
+With force=true, that routine unconditionally destroys the Cairo
+drawing context and sets SET_FRAME_GARBAGED, even though the surface
+dimensions did not change.
+
+Before the next full redisplay commits a repaint, any partial update
+path (cursor blink, mouse-face, fringe update) goes through
+`pgtk_begin_cr_clip', which allocates a *new empty* Cairo surface,
+draws just the small updated region, and then `flip_cr_context' in
+`pgtk_frame_up_to_date' promotes that mostly-empty surface to be the
+one `pgtk_handle_draw' blits to screen.  Result: the window looks
+blank except for whatever Emacs happened to redraw last.
+
+This matches the reported symptoms exactly (appears fine, blanks
+within ~1s, later only the cursor area repaints).  It is
+Wayland-and-HiDPI-specific because xterm.c has no equivalent watcher
+and a scale=1 display never triggers the mismatch.
+
+Fix
+---
+1. Root cause: in `update_watched_scale_factor', track whether we have
+   ever observed the real scale factor.  The hard-coded 1.0 at init is
+   a placeholder, not a prior value, so the first-time transition from
+   1.0 to the actual scale should just be recorded, not treated as a
+   change that requires destroying the drawing surface.  Subsequent
+   genuine scale changes (e.g. dragging the frame between monitors)
+   still force recreation as before.
+
+2. Defense in depth: in `pgtk_begin_cr_clip', seed a freshly-allocated
+   Cairo surface with the contents of the current `cr_active' surface
+   using CAIRO_OPERATOR_SOURCE.  This guarantees that if a partial
+   update beats the full garbage redisplay to the flip point, the
+   "new" surface already carries the on-screen pixels, so users see
+   old content instead of blank until the real repaint arrives.
+
+Files
+-----
+  src/pgtkterm.h : add scale_factor_seen bit-field to pgtk_output.
+  src/pgtkfns.c  : initialise the flag; gate the force on it.
+  src/pgtkterm.c : seed new Cairo surface from current cr_active.
+
+Apply with: patch -p1 < pgtk-wayland-popup-blank-fix.patch
+---
+ src/pgtkfns.c  | 17 ++++++++++++++---
+ src/pgtkterm.c | 14 ++++++++++++++
+ src/pgtkterm.h |  1 +
+ 3 files changed, 29 insertions(+), 3 deletions(-)
+
+diff -u a/src/pgtkfns.c b/src/pgtkfns.c
+--- a/src/pgtkfns.c
++++ b/src/pgtkfns.c
+@@ -1121,11 +1121,21 @@
+
+   if (scale_factor != FRAME_X_OUTPUT (f)->watched_scale_factor)
+     {
++      bool first = !FRAME_X_OUTPUT (f)->scale_factor_seen;
+       FRAME_X_OUTPUT (f)->watched_scale_factor = scale_factor;
+-      pgtk_cr_update_surface_desired_size (f,
+-					   FRAME_CR_SURFACE_DESIRED_WIDTH (f),
+-					   FRAME_CR_SURFACE_DESIRED_HEIGHT (f),
+-					   true);
++      FRAME_X_OUTPUT (f)->scale_factor_seen = true;
++
++      /* Skip forcing surface recreation on the first observation:
++	 the initial 1.0 stored at frame creation is a placeholder,
++	 not a prior scale factor that actually changed.  Destroying
++	 the Cairo context here would blank the frame until the next
++	 full redisplay, letting an intervening partial update (cursor
++	 blink, mouse-face) flip an empty surface to screen.  */
++      if (!first)
++	pgtk_cr_update_surface_desired_size (f,
++					     FRAME_CR_SURFACE_DESIRED_WIDTH (f),
++					     FRAME_CR_SURFACE_DESIRED_HEIGHT (f),
++					     true);
+     }
+ }
+
+@@ -1723,6 +1733,7 @@
+   FRAME_X_OUTPUT (f)->cr_surface_visible_bell = NULL;
+   FRAME_X_OUTPUT (f)->atimer_visible_bell = NULL;
+   FRAME_X_OUTPUT (f)->watched_scale_factor = 1.0;
++  FRAME_X_OUTPUT (f)->scale_factor_seen = false;
+   struct timespec ts = make_timespec (1, 0);
+   FRAME_X_OUTPUT (f)->scale_factor_atimer = start_atimer(ATIMER_CONTINUOUS,
+ 							 ts,
+diff -u a/src/pgtkterm.c b/src/pgtkterm.c
+--- a/src/pgtkterm.c
++++ b/src/pgtkterm.c
+@@ -7547,6 +7547,20 @@
+
+       cr = FRAME_CR_CONTEXT (f) = cairo_create (surface);
+       cairo_surface_destroy (surface);
++
++      /* Seed the new surface with the currently-presented one so that
++	 a partial update cannot flip a mostly-empty surface to screen
++	 before a full redisplay of a GARBAGED frame completes.  */
++      if (FRAME_CR_ACTIVE_CONTEXT (f))
++	{
++	  cairo_surface_t *old
++	    = cairo_get_target (FRAME_CR_ACTIVE_CONTEXT (f));
++	  cairo_save (cr);
++	  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
++	  cairo_set_source_surface (cr, old, 0, 0);
++	  cairo_paint (cr);
++	  cairo_restore (cr);
++	}
+     }
+
+   cairo_save (cr);
+diff -u a/src/pgtkterm.h b/src/pgtkterm.h
+--- a/src/pgtkterm.h
++++ b/src/pgtkterm.h
+@@ -449,6 +449,7 @@
+      and cairo_surface_t.  I need GTK's such signal, but there isn't, so
+      I watch it periodically with atimer. */
+   double watched_scale_factor;
++  bool_bf scale_factor_seen : 1;
+   struct atimer *scale_factor_atimer;
+ };
+

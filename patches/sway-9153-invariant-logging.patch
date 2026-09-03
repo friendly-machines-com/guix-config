@@ -1,0 +1,100 @@
+diff --git a/include/sway/input/text_input.h b/include/sway/input/text_input.h
+index 1012f1b..fcb89f1 100644
+--- a/include/sway/input/text_input.h
++++ b/include/sway/input/text_input.h
+@@ -27,6 +27,7 @@ struct sway_input_method_relay {
+ 	struct wl_list pending_im_events; // sway_pending_im_event::link
+ 	struct wlr_input_method_v2 *input_method; // doesn't have to be present
+ 	uint32_t pending_key_responses;
++	uint32_t logged_unmatched_key_responses;
+ 
+ 	struct wl_listener text_input_new;
+ 	struct wl_listener text_input_manager_destroy;
+diff --git a/sway/input/text_input.c b/sway/input/text_input.c
+index 48d92fa..3c5654b 100644
+--- a/sway/input/text_input.c
++++ b/sway/input/text_input.c
+@@ -26,6 +26,11 @@ enum sway_pending_im_state_change {
+ 	SWAY_PENDING_IM_STATE_DEACTIVATE,
+ };
+ 
++enum sway_im_key_response {
++	SWAY_IM_KEY_RESPONSE_COMMIT = 1 << 0,
++	SWAY_IM_KEY_RESPONSE_VIRTUAL_KEY = 1 << 1,
++};
++
+ struct sway_pending_im_event {
+ 	struct wl_list link;
+ 	enum sway_pending_im_event_type type;
+@@ -88,7 +93,8 @@ static void relay_process_pending_im_events(struct sway_input_method_relay *rela
+ static void relay_clear_pending_im_events(struct sway_input_method_relay *relay);
+ static void relay_drop_pending_im_keyboard_events(
+ 	struct sway_input_method_relay *relay);
+-static void relay_note_key_response(struct sway_input_method_relay *relay);
++static void relay_note_key_response(struct sway_input_method_relay *relay,
++	enum sway_im_key_response response);
+ 
+ static void handle_im_commit(struct wl_listener *listener, void *data) {
+ 	struct sway_input_method_relay *relay = wl_container_of(listener, relay,
+@@ -96,7 +102,7 @@ static void handle_im_commit(struct wl_listener *listener, void *data) {
+ 
+ 	struct sway_text_input *text_input = relay_get_focused_text_input(relay);
+ 	if (!text_input) {
+-		relay_note_key_response(relay);
++		relay_note_key_response(relay, SWAY_IM_KEY_RESPONSE_COMMIT);
+ 		return;
+ 	}
+ 	if (relay->input_method->current.preedit.text) {
+@@ -116,7 +122,7 @@ static void handle_im_commit(struct wl_listener *listener, void *data) {
+ 			relay->input_method->current.delete.after_length);
+ 	}
+ 	wlr_text_input_v3_send_done(text_input->input);
+-	relay_note_key_response(relay);
++	relay_note_key_response(relay, SWAY_IM_KEY_RESPONSE_COMMIT);
+ }
+ 
+ static void handle_im_keyboard_grab_destroy(struct wl_listener *listener, void *data) {
+@@ -566,10 +572,23 @@ static void relay_queue_im_state(struct sway_input_method_relay *relay,
+ 	relay_process_pending_im_events(relay);
+ }
+ 
+-static void relay_note_key_response(struct sway_input_method_relay *relay) {
+-	if (relay->pending_key_responses > 0) {
+-		relay->pending_key_responses--;
++static void relay_note_key_response(struct sway_input_method_relay *relay,
++		enum sway_im_key_response response) {
++	if (relay->pending_key_responses == 0) {
++		if (!(relay->logged_unmatched_key_responses & response)) {
++			const char *response_name =
++				response == SWAY_IM_KEY_RESPONSE_COMMIT
++				? "commit" : "virtual-key press";
++			sway_log(SWAY_ERROR, "Input-method %s has no outstanding "
++				"forwarded key press; response accounting cannot match it",
++				response_name);
++			relay->logged_unmatched_key_responses |= response;
++		}
++		relay_process_pending_im_events(relay);
++		return;
+ 	}
++
++	relay->pending_key_responses--;
+ 	if (relay->pending_key_responses == 0) {
+ 		relay_process_pending_im_events(relay);
+ 	}
+@@ -913,6 +932,7 @@ static void relay_handle_input_method(struct wl_listener *listener,
+ 	}
+ 
+ 	relay->input_method = input_method;
++	relay->logged_unmatched_key_responses = 0;
+ 	wl_signal_add(&relay->input_method->events.commit,
+ 		&relay->input_method_commit);
+ 	relay->input_method_commit.notify = handle_im_commit;
+@@ -1034,7 +1054,7 @@ void sway_input_method_relay_virtual_keyboard_key(
+ 			wl_resource_get_client(relay->input_method->keyboard_grab->resource)) {
+ 		// The input method forwarded the grabbed key instead of committing text.
+ 		// This is the only observable response for the unhandled-key path.
+-		relay_note_key_response(relay);
++		relay_note_key_response(relay, SWAY_IM_KEY_RESPONSE_VIRTUAL_KEY);
+ 	}
+ }
+ 

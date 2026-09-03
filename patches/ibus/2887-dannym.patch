@@ -1,0 +1,50 @@
+From 4e3bb2f4526c82621212ef291f571fa277e08b37 Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 02:37:59 +0000
+Subject: [PATCH] client/wayland: Forward key events via virtual keyboard in
+ IMv2
+
+The IMv2 protocol has no keysym request, so forward_key_event from
+IBus engines was silently dropped with a g_warning("TODO").
+
+When the engine provides a nonzero keycode (the evdev scancode it
+originally received), forward it via ibus_wayland_im_key() which
+sends it through the virtual keyboard.  This covers the common case
+of engines forwarding keys like Enter, Escape, and BackSpace.
+
+Engines that synthesize key events with keycode=0 still fall through
+to the unimplemented keysym path, which would require a
+keysym-to-keycode reverse lookup via xkb_keymap_key_for_each().
+
+BUG=https://github.com/ibus/ibus/pull/2887
+---
+ client/wayland/ibuswaylandim.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index d4fd2db84..85581fcb2 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -432,6 +432,22 @@ _context_forward_key_event_cb (IBusInputContext *context,
+     else
+         state = WL_KEYBOARD_KEY_STATE_PRESSED;
+ 
++    /* IMv2 has no keysym request; the only way to forward a key is via
++     * the virtual keyboard, which takes an evdev keycode.  Use the
++     * keycode from the engine when available.  Engines that synthesize
++     * key events without a real keycode pass keycode=0; for those we
++     * fall through to ibus_wayland_im_keysym() which logs a warning
++     * in IMv2 (keysym-to-keycode reverse lookup is not yet implemented).
++     */
++    if (priv->version == INPUT_METHOD_V2 && keycode != 0) {
++        ibus_wayland_im_key (wlim,
++                             priv->im_serial,
++                             0,
++                             keycode,
++                             state);
++        return;
++    }
++
+     ibus_wayland_im_keysym (wlim,
+                             priv->im_serial,
+                             keyval,

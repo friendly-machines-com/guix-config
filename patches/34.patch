@@ -1,0 +1,36 @@
+From 808854f082d2278ece14cffe6651c6cb67ca1b44 Mon Sep 17 00:00:00 2001
+From: Jared Finder <jared@finder.org>
+Date: Thu, 13 Feb 2025 14:11:42 -0800
+Subject: [PATCH] Don't show non-menu item keybinds
+
+This fixes the error with the back-button package (https://github.com/rolandwalker/back-button) which defines bindings with the shift modifier.
+---
+ window-tool-bar.el | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/window-tool-bar.el b/window-tool-bar.el
+index 095e94e..6258244 100644
+--- a/window-tool-bar.el
++++ b/window-tool-bar.el
+@@ -381,7 +381,11 @@ MENU-ITEM is a menu item to convert.  See info node `(elisp)Tool Bar'."
+                                   help-text)
+                                 str))
+            (put-text-property 0 len 'tool-bar-key key str)
+-           str))))))
++           str))))
++
++    ;; Non-menu items that don't get a button.
++    (`(,_ . ,(pred symbolp))
++     nil)))
+ 
+ (defun window-tool-bar--call-button ()
+   "Call the button that was clicked on in the tab line."
+@@ -393,6 +397,8 @@ MENU-ITEM is a menu item to convert.  See info node `(elisp)Tool Bar'."
+       (select-window (posn-window posn))
+       (let* ((str (posn-string posn))
+              (key (get-text-property (cdr str) 'tool-bar-key (car str)))
++             ;; FIXME: Use modifier keys which may have a different
++             ;; binding.
+              (cmd (lookup-key (window-tool-bar--get-keymap) (vector key))))
+         (call-interactively cmd)))))
+ 

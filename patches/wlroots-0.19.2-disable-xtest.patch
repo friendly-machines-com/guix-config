@@ -1,0 +1,12 @@
+diff -ru a/xwayland/server.c b/xwayland/server.c
+--- a/xwayland/server.c	1970-01-01 00:00:01.000000000 +0000
++++ b/xwayland/server.c	2026-01-09 01:01:22.711732305 +0000
+@@ -48,6 +48,8 @@
+ 	argv[i++] = server->display_name;
+ 	argv[i++] = "-rootless";
+ 	argv[i++] = "-core";
++	argv[i++] = "-extension";
++	argv[i++] = "XTEST";
+ 
+ 	argv[i++] = "-terminate";
+ #if HAVE_XWAYLAND_TERMINATE_DELAY

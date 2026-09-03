@@ -1,0 +1,37 @@
+From 58dff072a23e8f4b58476071ddccde36b926a59a Mon Sep 17 00:00:00 2001
+From: Danny Milosavljevic <dannym@friendly-machines.com>
+Date: Tue, 24 Mar 2026 00:52:35 +0000
+Subject: [PATCH] ui/gtk3: Remove DO_NOT_REAP_CHILD from ibus-daemon spawn
+
+DO_NOT_REAP_CHILD requires the caller to reap the child via
+GLib.ChildWatch or waitpid(), but this was never done.  If ibus-daemon
+exits, the child process becomes a zombie.
+
+Since the pid is not used after spawning, remove DO_NOT_REAP_CHILD
+and let GLib auto-reap the child.
+
+BUG=https://github.com/ibus/ibus/pull/2885
+---
+ ui/gtk3/application.vala | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/ui/gtk3/application.vala b/ui/gtk3/application.vala
+index dcabc892e..769bef224 100644
+--- a/ui/gtk3/application.vala
++++ b/ui/gtk3/application.vala
+@@ -250,13 +250,11 @@ class Application {
+         string[] args = { "ibus-daemon" };
+         foreach (var arg in m_daemon_args.split(" "))
+             args += arg;
+-        GLib.Pid child_pid = 0;
+         try {
+             GLib.Process.spawn_async (null, args, null,
+-                                      GLib.SpawnFlags.DO_NOT_REAP_CHILD
+-                                      | GLib.SpawnFlags.SEARCH_PATH,
++                                      GLib.SpawnFlags.SEARCH_PATH,
+                                       null,
+-                                      out child_pid);
++                                      null);
+         } catch (GLib.SpawnError e) {
+             m_log.printf("ibus-daemon error: %s\n", e.message);
+             warning("%s\n", e.message);
