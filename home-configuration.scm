@@ -1536,7 +1536,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (specification->package "libreoffice")
              (specification->package "evince")
              (specification->package "gedit")
-             (specification->package "fbreader")
+             ;(specification->package "fbreader")
                                         ;(specification->package "sioyek")
              (specification->package "xournalpp")
              (specification->package "blender")
