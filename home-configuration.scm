@@ -815,7 +815,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (package-with-emacs-pgtk (specification->package "emacs-smartparens"))
              (package-with-emacs-pgtk (specification->package "emacs-combobulate"))
              (package-with-emacs-pgtk (specification->package "emacs-indent-bars")) ; maybe overdoing it
-             (package-with-emacs-pgtk (emacs-spacious-padding-patch (specification->package "emacs-spacious-padding"))) ; spacing between windows
+             (package-with-emacs-pgtk (specification->package "emacs-spacious-padding")) ; spacing between windows ; emacs-spacious-padding-patch
              (package-with-emacs-pgtk (specification->package "emacs-crdt"))
              (package-with-emacs-pgtk (specification->package "emacs-magit"))
              (package-with-emacs-pgtk (specification->package "emacs-magit-org-todos"))
