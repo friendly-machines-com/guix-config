@@ -1408,6 +1408,8 @@ protects the token keys by using your system's TPM.  It uses Linux's
              ;; Often I need that for scanning and OCRing.
              (specification->package "pdftk")
              (specification->package "texlive-digestif")
+             ;; You *MUST* have this in the profile, otherwise font cache will not be generated and dvisvgm will take 3 seconds for one formula.
+             (specification->package "texlive-scripts")
              ;; For xenops (or for me)
              (specification->package "texlive-listings")
              ;; For xenops (or for me)
