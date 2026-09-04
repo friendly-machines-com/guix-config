@@ -93,7 +93,7 @@
 (define emacs-patch
   (options->transformation `((with-patch . ,(string-append "emacs-pgtk="
                                                            (current-source-directory)
-                                                           "/patches/emacs-tab-stops.patch")))))
+                                                           "/patches/emacs-wayland4.patch")))))
 
 (define foot-patch
   (options->transformation `((with-debug-info . "foot")
