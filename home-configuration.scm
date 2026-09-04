@@ -1543,7 +1543,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
 
 ;;; Database
 
-                                        ;(specification->package "sqlite") ; conflict because of libsoup.
+             (specification->package "sqlite") ; also Android
              (specification->package "postgresql")
 
 ;;; Science
