@@ -1438,7 +1438,9 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (specification->package "openvpn")
              (specification->package "mosh")
              (specification->package "ublock-origin-chromium")
-             (specification->package "gnupg")
+             ; disable for now (specification->package "gnupg")
+             (specification->package "sequoia")  ; sq, gnupg replacement
+             (specification->package "sequoia-chameleon-gnupg")  ; sq, gnupg replacement, gnupg wrapper
              (specification->package "transmission")
              (specification->package "openconnect")
              (specification->package "blueman")
