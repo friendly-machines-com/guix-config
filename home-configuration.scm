@@ -1141,6 +1141,8 @@ protects the token keys by using your system's TPM.  It uses Linux's
 
             (list
              (waybar-patch (specification->package "waybar"))
+             ;(specification->package "librsvg") ; so it registers a gdk pixbuf loader without GUIX_GDK_PIXBUF_MODULE_FILES="/gnu/store/lp3bpi123drz7xf44pkkglhnvhfqm7n0-librsvg-2.58.5/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"--which would bleed into program invoked by waybar.  This way here it at least bleeds into everything.
+             ;(specification->package "snixembed") ; Qt5 has problems with making dbus StatusNotifierItems; waybar doesn't show them correctly; this proxies them as XEmbed
                                         ;(specification->package "yambar-wayland")
              (specification->package "i3status") ; sway can use it
 
@@ -1148,12 +1150,13 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (specification->package "polkit-gnome") ; ???
              (specification->package "hicolor-icon-theme")
              (specification->package "adwaita-icon-theme")
+             ; breeze-icons
              (specification->package "dunst")
              (specification->package "bluez")
 
 ;;; System/Laptop
              
-             ;(specification->package "tlp") ; service
+                                        ;(specification->package "tlp") ; service
              (specification->package "tlpui") ; power management
              (specification->package "openrgb")
 
@@ -1163,6 +1166,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
 ;;; System Tools
 
              (specification->package "pass-age")
+             ;(specification->package "lesspass")
              tpm-fido ; see also: autostart.
              (specification->package "patool") ; universal archiver
              (specification->package "xrdb")      ; compat for nheko
