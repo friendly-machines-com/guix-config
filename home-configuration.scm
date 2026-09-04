@@ -95,10 +95,12 @@
                                                            (current-source-directory)
                                                            "/patches/emacs-tab-stops.patch")))))
 
-(define offlineimap-patch
-  (options->transformation `((with-patch . ,(string-append "python-imaplib2="
+(define foot-patch
+  (options->transformation `((with-debug-info . "foot")
+                             (with-patch . ,(string-append "foot="
                                                            (current-source-directory)
-                                                           "/patches/imaplib2-python3.patch")))))
+                                                           "/patches/foot-scroll-region-fix.patch")))))
+
 (define emacs-agent-shell-patch
   (options->transformation `((with-patch . ,(string-append "emacs-agent-shell="
                                                            (current-source-directory)
@@ -1103,7 +1105,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (specification->package "efibootmgr")
              ;;(specification->package "roxterm")
              (specification->package "alacritty")
-             (specification->package "foot")
+             (foot-patch (specification->package "foot"))
              (specification->package "p7zip")
              (specification->package "zip")
              (specification->package "unzip")
