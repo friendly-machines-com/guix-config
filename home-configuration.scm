@@ -175,6 +175,70 @@
                                                            ))
                              )))
 
+(define python-pocket-tts-patch
+  (options->transformation `((with-branch . "python-pocket-tts=speech-dispatcher")
+                             (with-git-url . "python-pocket-tts=https://friendly-machines.com/git/pocket-tts.git"))))
+
+(define ibus-speech-to-text-patch
+  (options->transformation `((with-branch . "ibus-speech-to-text=onnx-asr")
+                             (with-git-url . "ibus-speech-to-text=https://github.com/daym/IBus-Speech-To-Text.git"))))
+
+(define ibus-patch
+  (options->transformation `(
+;  (with-patch . ,(string-append "ibus="
+;                                                          (current-source-directory)
+;                                                          "/patches/ibus-client-wayland-Add-verbose-flag-and-debug-logging.patch"))
+                                                          )))
+
+(define-public ibus
+  (package
+   (inherit (specification->package "ibus"))
+   (name "ibus")
+   (version "main")
+   (source (origin
+            (method git-fetch)
+            (uri (git-reference
+                  (url "https://github.com/ibus/ibus")
+                  (commit version)))
+            (file-name (git-file-name name version))
+            (sha256
+             (base32
+              "0csqk7282mc70cp9wwllcyfhmzn761ir182zw0wff6dmqqgbibc6")) ; worked: 0i3axzlb25gic1119vh8v83773l0xsbzj9j8x8x158kr3r59vrmz"
+            (patches
+             (map
+              (lambda (name)
+                (local-file
+                 (string-append (current-source-directory)
+                                "/patches/ibus/" name)))
+              '( "0001-client-wayland-Drop-Ghostty-preedit-workaround.patch" ; I'm not using Ghostty
+                ; upstreamed "2871.patch"
+                ; is merged "2873.patch" ; Fix modifier sequence handling ; review comments all good.  JUST WAIT UNTIL ITS MERGED
+                ; upstreamed "2874.patch" ; Guard against XKB_MOD_INVALID in modifier mask ; review comment: STILL SLIGHTLY WRONG;     i changed it and updated it.
+                ; FIXME: "2875.patch" ; update xkb used on keyboard switch; review comment: too often;  made a large large change.  He made conflicting prelim changes
+                ; upstreamed "2876.patch" ; free leaked resources; review comment: not idempotent ; sent!
+                ; upstreamed "2877.patch"
+                ; FIXME doesnt apply cleanly: "2878.patch" ; Forward key instead of dropping it when ibuscontext ; different approach
+                ; upstreamed "2879.patch" ; zwp_input_method_v2 unavailable event; small review comment;    I changed it and updated it (sent upstream).
+                ; upstreamed "2880.patch"
+                ; upstreamed "2881.patch"
+                ; upstreamed "2882.patch"
+                ; upstreamed "2883.patch" ; container get pw ent; review comment: empty string is a problem, too; sent upstream
+                ; upstreamed "2884.patch"
+                ; superseded "2885.patch"
+                ; upstreamed "2886.patch"
+                "2887.patch" ; forward key events via virtual keyboard; review comment: gdk_display_map_keyval() missing
+                ; testing whether I need it. "ibus-wayland-exec-daemon.patch" ; =2907
+                ))))) 
+   (native-inputs
+    (modify-inputs (package-native-inputs (specification->package "ibus"))
+                   (replace "autoconf" autoconf-2.72)))
+   (arguments
+    (substitute-keyword-arguments (package-arguments (specification->package "ibus"))
+                                  ((#:phases phases '%standard-phases)         
+                                   #~(modify-phases #$phases         
+                                                    (add-before 'bootstrap 'prepare-gtk-doc
+                                                                (lambda _
+                                                                  (invoke "gtkdocize" "--copy")))))))))
 
 (define llama-tune
   (options->transformation `( ; "invalid Git URL replacement specification" (with-git-url . "https://github.com/unslothai/llama.cpp.git") ; dynamic quantization
