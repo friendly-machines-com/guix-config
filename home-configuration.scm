@@ -365,7 +365,7 @@
    (inputs
     `(("e2fsprogs" ,e2fsprogs)
                                         ;("jbr11" ,jbr11 "jdk")
-      ("openjdk" ,openjdk "jdk")
+      ("openjdk" ,openjdk24 "jdk")
       ("jbr17" ,jbr17 "jdk")
       ("jbr21" ,jbr21 "jdk")
       ("libsecret" ,libsecret)))
