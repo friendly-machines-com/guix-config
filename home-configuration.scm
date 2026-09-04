@@ -1433,7 +1433,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (specification->package "iptables")
              (specification->package "nftables")
                                         ;(specification->package "mpop") ; TODO: guix home service
-             (offlineimap-patch (specification->package "offlineimap3"))
+             ;(offlineimap-patch (specification->package "offlineimap3"))
              ;; Namespace "Gst" is not available
              ;; xpra needs to be installed on the remote host as well!
              (specification->package "openvpn")
