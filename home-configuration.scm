@@ -393,67 +393,6 @@
 ;; In Rust to begin with
                                         ;(specification->package "nushell")
 
-(define-public xdg-desktop-portal-gtk
-  (package
-   (name "xdg-desktop-portal-gtk")
-   (version "1.15.3")
-   (source (origin
-            (method url-fetch)
-            (uri (string-append
-                  "https://github.com/flatpak/xdg-desktop-portal-gtk/releases/download/"
-                  version "/xdg-desktop-portal-gtk-" version ".tar.xz"))
-            (sha256
-             (base32
-              "0drvlanj4pydcmq1fhk8nbj5mb2zpf2pxcqxd4g61a0r4hyp98s7"))))
-   (build-system meson-build-system)
-   (arguments
-    `(#:phases
-      (modify-phases %standard-phases
-                     (add-after 'unpack 'po-chmod
-                                (lambda _
-                                  ;; Make sure 'msgmerge' can modify the PO files.
-                                  (for-each (lambda (po)
-                                              (chmod po #o666))
-                                            (find-files "po" "\\.po$"))
-                                  #t)))
-      ;; Enable Gnome portal backends
-      ;#:configure-flags
-      ; TODO: dbus-service-dir systemd-user-unit-dir datarootdir wallpaper settings appchooser lockdown ; TODO: dependencies for that.
-      ;(list
-      ; "--enable-appchooser"
-      ; "--enable-wallpaper"
-      ; "--enable-screenshot"
-      ; "--enable-screencast"
-      ; "--enable-background"
-      ; "--enable-settings")
-
-       ))
-   (native-inputs
-    `(("pkg-config" ,pkg-config)
-      ("autoconf" ,autoconf)
-      ("automake" ,automake)
-      ("libtool" ,libtool)
-      ("libxml2" ,libxml2)
-      ("glib:bin" ,glib "bin")
-      ("which" ,which)
-      ("gettext" ,gettext-minimal)))
-   (inputs
-    `(("glib" ,glib)
-      ("gtk" ,gtk+)
-      ("fontconfig" ,fontconfig)
-      ("gnome-desktop" ,gnome-desktop)
-      ("gsettings-desktop-schemas" ,gsettings-desktop-schemas)))
-   (propagated-inputs
-    (list xdg-desktop-portal-next))
-   (home-page "https://github.com/flatpak/xdg-desktop-portal-gtk")
-   (synopsis "GTK implementation of xdg-desktop-portal")
-   (description
-    "This package provides a backend implementation for xdg-desktop-portal
-which uses GTK+ and various pieces of GNOME infrastructure, such as the
-@code{org.gnome.Shell.Screenshot} or @code{org.gnome.SessionManager} D-Bus
-interfaces.")
-   (license license:lgpl2.1+)))
-
 (define-public gtkmm-3
   (package
    (inherit gtkmm)
@@ -1105,8 +1044,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
 
             (list (specification->package "xdg-dbus-proxy"))
 
-                                        ;(list (@ (gnu packages freedesktop) xdg-desktop-portal)) ; otherwise it would pick up xdg-desktop-portal-next
-            (specifications->packages '("xdg-desktop-portal@1.18"
+            (specifications->packages '("xdg-desktop-portal"
                                         "xdg-desktop-portal-gtk" ; required for Access--which is required for ScreenCast ; todo removed
                                         "xdg-desktop-portal-wlr"))
             (list ;xdg-desktop-portal-gtk 
