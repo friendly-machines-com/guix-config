@@ -605,35 +605,76 @@ notebooks in GNU Emacs.")
 Note: This is a minimalist variant of emacs-guix, with simply
 file prettification."))))
 
+(define-public dummy-settings-portal
+  (package
+    (name "dummy-settings-portal")
+    (version "0.0.4")
+    (source
+      (origin
+       (method git-fetch)
+       (uri (git-reference
+             (url "https://codeberg.org/daym/dummy-settings-portal.git")
+             (commit (string-append "v" version))))
+       (file-name (git-file-name name version))
+       (sha256
+        (base32
+         "0a1cl53653kccmd8nqgjd41658ihqmg5hy3fp5ix8gissqy9cv3n"))))
+    (build-system glib-or-gtk-build-system)
+    (arguments
+     (list #:make-flags
+           #~(list (string-append "CC=" #$(cc-for-target))
+                   (string-append "PREFIX=" #$output)
+                   (string-append "PREFIX=" #$output)
+                   )))
+    (native-inputs
+     (list pkg-config))
+    (inputs
+     (list glib))
+    (synopsis "dummy-settings-portal")
+    (description "FIXME")
+    (home-page "FIXME")
+    (license license:gpl3+))) ; FIXME
+
 (define-public go-github-com-foxcpp-go-assuan
   (package
     (name "go-github-com-foxcpp-go-assuan")
     (version "1.0.0")
     (source
-      (origin
-        (method git-fetch)
-        (uri (git-reference
-               (url "https://github.com/foxcpp/go-assuan")
-               (commit (string-append "v" version))))
-        (file-name (git-file-name name version))
-        (sha256
-         (base32 "0xp51yf2wb70zb8irj28gf7jzp380bwjycd8kkj45jrvm0gzll2c"))
-        ;(patches
-        ; (search-patches "go-assuan-1.0.0-fix-tests.patch"))
-         ))
+     (origin
+       (method git-fetch)
+       (uri (git-reference
+             (url "https://github.com/foxcpp/go-assuan")
+             (commit (string-append "v" version))))
+       (file-name (git-file-name name version))
+       (sha256
+        (base32 "0xp51yf2wb70zb8irj28gf7jzp380bwjycd8kkj45jrvm0gzll2c"))))
     (build-system go-build-system)
     (arguments
-     (list #:tests? #f
-           #:skip-build? #t 
-           #:import-path "github.com/foxcpp/go-assuan"))
+     (list #:skip-build? #t
+           #:import-path "github.com/foxcpp/go-assuan"
+           #:phases
+           #~(modify-phases %standard-phases
+               ;; The v1.0.0 example test does not compile with newer Go:
+               ;; Session.Transact takes map[string]interface{}, not map[string][]byte.
+               (add-after 'unpack 'fix-transact-example
+                 (lambda* (#:key import-path #:allow-other-keys)
+                   (substitute*
+                       (string-append (getenv "GOPATH") "/src/" import-path
+                                      "/client/session_test.go")
+                     (("map\\[string\\]\\[\\]byte\\{")
+                      "map[string]interface{}{")
+                     (("\"KEYBLOCK\":      \\{\\}")
+                      "\"KEYBLOCK\":      []byte{}")
+                     (("\"KEYBLOCK_INFO\": \\{\\}")
+                      "\"KEYBLOCK_INFO\": []byte{}")))))))
     (home-page "https://github.com/foxcpp/go-assuan")
     (synopsis "Pure Go implementation of Assuan IPC protocol")
     (description "This package provides a pure Go implementation of the
 Assuan IPC protocol, which is used in the GnuPG suite for communication
-between components like gpg, gpg-agent, and pinentry.") 
+between components like gpg, gpg-agent, and pinentry.")
     (license license:expat)))
 
-(define-public go-github-com-google-go-tpm-0.3 
+(define-public go-github-com-google-go-tpm-0.3
   (package
     (inherit go-github-com-google-go-tpm)
     (name "go-github-com-google-go-tpm")
