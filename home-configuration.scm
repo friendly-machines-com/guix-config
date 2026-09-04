@@ -99,6 +99,15 @@
   (options->transformation `((with-patch . ,(string-append "python-imaplib2="
                                                            (current-source-directory)
                                                            "/patches/imaplib2-python3.patch")))))
+(define emacs-agent-shell-patch
+  (options->transformation `((with-patch . ,(string-append "emacs-agent-shell="
+                                                           (current-source-directory)
+                                                           "/patches/emacs-agent-shell-support-form-elicitation.patch"))
+                             (with-patch . ,(string-append "emacs-acp="
+                                                           (current-source-directory)
+                                                           "/patches/emacs-acp-support-form-elicitation.patch"))
+                                                           ))) ; I need that to be able to resume.
+
 
 (define nwg-launchers-patch
   (options->transformation `((with-patch . ,(string-append "nwg-launchers="
@@ -796,6 +805,9 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (package-with-emacs-pgtk (specification->package "emacs-org-emms"))
              (package-with-emacs-pgtk (specification->package "emacs-mu4e-dashboard")) ; live query mu4e from org
              (package-with-emacs-pgtk (specification->package "emacs-mu4e-alert")) ; requires mu4e-dbus
+
+             ;(package-with-emacs-pgtk (specification->package "emacs-acp"))
+             (package-with-emacs-pgtk (emacs-agent-shell-patch (specification->package "emacs-agent-shell"))) ; higher-level than acp
 
              ;;(package-with-emacs-pgtk (specification->package "emacs-bbdb")) ; contact management (old)
              (package-with-emacs-pgtk (specification->package "emacs-ebdb")) ; contact management
