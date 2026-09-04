@@ -694,7 +694,11 @@ between components like gpg, gpg-agent, and pinentry.")
              (commit (string-append "v" version))))
        (file-name (git-file-name name version))
        (sha256
-        (base32 "0y9w9xkvm1lqda7y56dgclmadywp3q9d12p5pd62l9l18g6kbl5b"))))))
+        (base32 "0y9w9xkvm1lqda7y56dgclmadywp3q9d12p5pd62l9l18g6kbl5b"))))
+    (arguments
+     (list #:skip-build? #t
+           #:import-path "github.com/google/go-tpm"
+           #:test-subdirs #~(list "tpm" "tpm2" "tpmutil")))))
 
 (define-public go-github-com-psanford-uhid
   (let ((commit "a7c1e481958d6d8861a35d61a3f0734b94848283")
