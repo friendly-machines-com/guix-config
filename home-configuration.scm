@@ -1614,6 +1614,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (specification->package "steam")
              (specification->package "heroic") ; system i686-linux
              (specification->package "freeciv")
+             (specification->package "dolphin-emu")
 
 ;;; Office
 
