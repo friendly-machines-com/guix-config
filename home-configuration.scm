@@ -449,7 +449,8 @@
                               )))
 
 (define backup-packages
-  (append (specifications->packages '("cryfs" "onedrive"))
+  (append (specifications->packages '( ; DISAPPEARED "cryfs"
+   "onedrive"))
           (list ; (vorta-patch 
            (specification->package "vorta")
                                         ;)
