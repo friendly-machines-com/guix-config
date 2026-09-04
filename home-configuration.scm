@@ -766,7 +766,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (package-with-emacs-pgtk (specification->package "emacs-pinentry"))
              (package-with-emacs-pgtk (specification->package "emacs-enwc")) ; network manager
              (package-with-emacs-pgtk (specification->package "emacs-age")) ; encryption
-             ; BROKEN (package-with-emacs-pgtk (specification->package "emacs-elisp-autofmt"))
+             (package-with-emacs-pgtk (specification->package "emacs-elisp-autofmt"))
              (package-with-emacs-pgtk (specification->package "emacs-password-store")) ; "pass" integration
              (package-with-emacs-pgtk (specification->package "emacs-passage")) ; password mgr
              (package-with-emacs-pgtk (specification->package "emacs-scad-mode"))
