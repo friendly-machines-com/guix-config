@@ -1441,6 +1441,10 @@ protects the token keys by using your system's TPM.  It uses Linux's
              ;; For me (and org)
              (specification->package "texlive-braket") ; \ket
              ;; For me (and org)
+             (specification->package "texlive-german")
+             ;; For me (and org)
+             (specification->package "texlive-marvosym") ; Euro
+             ;; For me (and org)
              (specification->package "texlive-mathtools") ; \ket, :=
              ;; For xenops
              (specification->package "texlive-dvipng")
