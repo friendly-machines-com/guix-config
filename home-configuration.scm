@@ -283,7 +283,8 @@
                                      (if (and (eq? 'emacs (build-system-name (package-build-system p)))
                                               (not (string=? (package-name p) "emacs-jedi")) ; test failure on native compilation
                                               (not (string=? (package-name p) "emacs-dap-mode")) ; native-compiler-error-empty-byte
-                                              (not (string=? (package-name p) "emacs-yaml"))) ; would hang otherwise
+                                              (not (string=? (package-name p) "emacs-yaml")) ; would hang otherwise
+                                              (not (string=? (package-name p) "emacs-agent-shell"))) ; differing test for images (emacs-minimal: no png support, so test passes; both emacs and emacs-pgtk: PNG support, test assumes no such support on non-graphical emacs)
                                         ; emacs-guix emacs-haskell-mode emacs-pdf-tools
                                          `(#:emacs ,emacs-pgtk
                                            ,@(package-arguments p))
