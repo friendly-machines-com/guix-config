@@ -437,8 +437,8 @@
                               "wl-clipboard"
                               "cliphist" ; or maybe wl-clip-persist ; in any case requires wl-clipboard
                                         ;"nwg-launchers"
-                              "waypipe"
                               "rofi"
+                              "waypipe" ; cargo-build-system (json)
                               "slurp" ; screenshot
                                         ;"scrot" ; screenshot ; supposedly only xorg
                               "maim" ; screenshot; need no hold-drag
