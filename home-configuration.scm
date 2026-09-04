@@ -1411,6 +1411,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              ;; Scientist.
              (specification->package "texmacs-guile3")
              (specification->package "zotero")
+             (specification->package "labplot")
 
 ;;; Theorem Proving
 
