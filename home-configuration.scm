@@ -1094,10 +1094,15 @@ protects the token keys by using your system's TPM.  It uses Linux's
 (define (emacs-daemon-services q)
   (list (shepherd-service (provision '(emacs))
                     (documentation "Run GNU Emacs in daemon mode")
-                    (start #~(make-forkexec-constructor (list #$(file-append
+                    (start #~(begin
+                               ; FIXME: (setenv "LC_CTYPE" "zh_CN.utf8") ; <https://wiki.archlinux.org/title/Fcitx#Emacs>
+                               (make-forkexec-constructor (list #$(file-append
                                                                  (package-with-emacs-pgtk emacs-pgtk)
                                                                  "/bin/emacs")
-                                                              "--fg-daemon")))
+                                                              ;"--debug-init" ; otherwise I fucking freak out
+                                                              "--fg-daemon")
+                                                          #:log-file (string-append (getenv "HOME")
+                                                                                    "/.local/var/log/emacs.log"))))
                     (stop #~(make-system-destructor
                              "emacsclient -e '(save-buffers-kill-emacs)'")))))
 
