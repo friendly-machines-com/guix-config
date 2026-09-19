@@ -16,7 +16,7 @@ then
 	# vorta:         elif SettingsModel.get(key='foreground').value:
 	# QSG_RHI_BACKEND=vulkan for vkkhrdisplay; otherwise it's not very usable.  See <https://doc.qt.io/qt-6/embedded-linux.html>; also, vkkhrdisplay has no mouse cursor
 	export QT_QPA_PLATFORM="wayland;vkkhrdisplay;vnc"
-	export QT_QPA_PLATFORMTHEME=gtk3
+	export QT_QPA_PLATFORMTHEME=gtk3 # uses dconf-service, supposedly.
 	export GDK_BACKEND=wayland # possible: wayland,x11
 	# sway:
 	export XDG_CURRENT_DESKTOP=sway
