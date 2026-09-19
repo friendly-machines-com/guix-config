@@ -30,7 +30,7 @@ then
 	export CHROMIUM_FLAGS="--enable-remote-extensions --enable-features=WaylandWindowDecorations,WebRTCPipeWireCapture --ozone-platform-hint=auto --allow-file-access-from-files"
 	# The actual ssh-agent is started by shepherd and/or autostart (see guix home)
 
-	# Hinting; User has to use DejaVu Sans and DejaVu Sans Mono that has good hinting support
+	# Hinting; DejaVu Sans--and DejaVu Sans Mono that has good hinting support
 	export FREETYPE_PROPERTIES="truetype:interpreter-version=35"
 
     # Not sure what SDL2 does when it sees that (as opposed to SDL3)
