@@ -1598,6 +1598,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (specification->package "bubblewrap")
              (specification->package "libvirt")
              (specification->package "flatpak")
+             (specification->package "gnome-software") ; so I can click on "Install" on flathub.com in the web browser
              (specification->package "dosbox")
              (specification->package "wine64")
                                         ; (specification->package "docker-compose") ; buggy with podman
