@@ -829,7 +829,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (package-with-emacs-pgtk (specification->package "emacs-dtrt-indent"))
              (package-with-emacs-pgtk (specification->package "emacs-slime-company"))
              (package-with-emacs-pgtk (specification->package "emacs-eval-in-repl-slime"))
-             ;(package-with-emacs-pgtk (specification->package "emacs-pyvenv")) ; we're not really using that
+             (package-with-emacs-pgtk (specification->package "emacs-pyvenv")) ; we're not really using that; but if we remove it emacs startup gets really slow
              ;; For Lisp and Javascript; Note: emacs-sly is a fork
              (package-with-emacs-pgtk (specification->package "emacs-slime"))
              (package-with-emacs-pgtk (specification->package "emacs-eldoc"))
