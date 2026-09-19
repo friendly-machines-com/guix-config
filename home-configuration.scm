@@ -227,7 +227,7 @@
                 ; upstreamed "2884.patch"
                 ; superseded "2885.patch"
                 ; upstreamed "2886.patch"
-                "2887.patch" ; forward key events via virtual keyboard; review comment: gdk_display_map_keyval() missing
+                ; upstreamed variant "2887.patch" ; forward key events via virtual keyboard; review comment: gdk_display_map_keyval() missing
                 ; testing whether I need it. "ibus-wayland-exec-daemon.patch" ; =2907
                 ))))) 
    (native-inputs
