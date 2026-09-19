@@ -28,6 +28,15 @@
     "b1fe5aaff3ab48e798a4cce02f0212bc91f423dc"
     (openpgp-fingerprint
      "CA4F 8CF4 37D7 478F DA05  5FD4 4213 7701 1A37 8446"))))
+
+      (channel
+        (name 'guix-ai-cloud)
+        (url "https://codeberg.org/daym/guix-ai-cloud")
+        (introduction
+         (make-channel-introduction
+          "9bd881a968c10730a0b50a7ddbad5a0f22dba8c9"
+          (openpgp-fingerprint
+           "295A F991 6F46 F8A1 34B0 29DA 8086 3842 F0FE D83B"))))
      
       (channel
         (name 'nonguix)
