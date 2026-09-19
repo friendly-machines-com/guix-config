@@ -116,6 +116,30 @@
                                                            (current-source-directory)
                                                            "/patches/nwg-launchers-startup-notification.patch")))))
 
+;; Revert wlroots' input-method-v2 commit-serial validation (wlroots commit
+;; 3bf9000a, "input-method-v2: validate commit serial", 2023-12-18, fixing
+;; <https://gitlab.freedesktop.org/wlroots/wlroots/-/issues/3782>) and drop
+;; sway's pending_key_responses barrier along with its logging patch.
+;;
+;; That validation makes the compositor discard a commit whose serial differs
+;; from the number of `done` events it has issued.  A commit carries no
+;; text-input identity, so the compositor cannot tell "stale because the
+;; focused input changed" from "stale because the focused client committed its
+;; text-input state while the input method was still producing this commit".
+;; The latter happens on essentially every keystroke, so typed characters were
+;; silently dropped when typing fast.
+;;
+;; The barrier tried to serialize `done` against forwarded keys, but
+;; zwp_input_method_keyboard_grab_v2.key has no ack, so it could only guess: it
+;; leaked (wedged the keyboard) and over-counted (flushed a `done` early ->
+;; the very stale commits it was meant to prevent).
+;;
+;; Without the strict check wlroots applies the commit and adopts the client's
+;; serial (the pre-2023 behaviour), which removes the need for the barrier.
+;; Trade-off: this re-introduces #3782 -- a commit issued while a text input is
+;; being deactivated can land in the newly focused input.  That is rare (needs
+;; a focus switch during composition) and IBus avoids committing after
+;; deactivate (_process_key_event_done checks priv->ibuscontext).
 (define sway-patch
   (options->transformation `((with-patch . ,(string-append "sway="
                                                            (current-source-directory)
