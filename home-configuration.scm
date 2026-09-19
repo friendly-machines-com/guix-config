@@ -777,7 +777,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
              (package-with-emacs-pgtk (specification->package "emacs-vhdl-ts-mode"))
                                         ;(package-with-emacs-pgtk (specification->package "emacs-vhdl-ext"))
              (package-with-emacs-pgtk (specification->package "emacs-fpga"))
-             (package-with-emacs-pgtk (emacs-window-tool-bar-patch (specification->package "emacs-window-tool-bar")))
+             ; emacs core package (package-with-emacs-pgtk (emacs-window-tool-bar-patch (specification->package "emacs-window-tool-bar")))
              (package-with-emacs-pgtk (specification->package "emacs-wgrep"))
              (package-with-emacs-pgtk (specification->package "emacs-ws-butler")) ; auto trim whitespace from end of MODIFIED lines
              (package-with-emacs-pgtk (specification->package "emacs-vlf")) ; very large files
