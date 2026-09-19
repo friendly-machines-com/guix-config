@@ -1574,6 +1574,11 @@ protects the token keys by using your system's TPM.  It uses Linux's
 ;;; AI
 
              (llama-tune (specification->package "llama-cpp")) ; can be tuned
+             (python-pocket-tts-patch (specification->package "python-pocket-tts"))
+             (specification->package "speech-dispatcher") ; spd-say -y $HOME/.local/scarlet_voice_v2.safetensors "Hello"
+             (ibus-patch ibus)
+             (ibus-patch (specification->package "ibus-anthy"))
+             (ibus-patch (specification->package "anthy"))
 
 ;;; Android
              
