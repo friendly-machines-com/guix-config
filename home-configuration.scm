@@ -957,7 +957,7 @@ protects the token keys by using your system's TPM.  It uses Linux's
                                         ;old (package-with-emacs-pgtk (specification->package "emacs-counsel-projectile"))
                                         ;old (package-with-emacs-pgtk (specification->package "emacs-counsel-jq"))
                                         ;old (package-with-emacs-pgtk (specification->package "emacs-helm-projectile"))
-             ; BROKEN (package-with-emacs-pgtk (specification->package "emacs-company-jedi")) ; Python completion
+             (package-with-emacs-pgtk (specification->package "emacs-company-jedi")) ; Python completion
              (package-with-emacs-pgtk (specification->package "emacs-back-button"))
                                         ;(package-with-emacs-pgtk (specification->package "emacs-wanderlust")) ; email (POP3, IMAP and Maildir)
                                         ;(package-with-emacs-pgtk (specification->package "emacs-mew"))
