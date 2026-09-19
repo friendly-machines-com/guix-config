@@ -40,4 +40,11 @@ then
 	export WLR_RENDERER=vulkan
 fi
 
+# Accessibility
+
+# All bullshit (on Wayland).
+#export GTK_IM_MODULE=ibus
+#export QT_IM_MODULE=ibus
+#export XMODIFIERS=@im=ibus
+
 exec sway
