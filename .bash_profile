@@ -85,6 +85,9 @@ export PIP_REQUIRE_VIRTUALENV=1
 # For emacs-lsp-booster
 export LSP_USE_PLISTS=true
 
+# otherwise dvisvgm takes 3 seconds instead of 0.33 seconds.  (since it uses XDG_DATA_DIRS then)
+# ecrm1000.pfb ???
+export OSFONTDIR="${HOME}/.guix-home/profile/share/fonts"
 # Debug swaylock
 #ulimit -c unlimited
 
