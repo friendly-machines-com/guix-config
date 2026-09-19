@@ -59,7 +59,6 @@ export VISUAL="emacsclient -c -a emacs"         # $VISUAL opens in GUI mode
 
 #export WII=192.168.10.248
 
-. ~/.guix-home/profile/etc/profile.d/flatpak.sh
 
 #XDG_DATA_DIRS="${HOME}/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 #export XDG_DATA_DIRS
