@@ -1793,6 +1793,13 @@ protects the token keys by using your system's TPM.  It uses Linux's
                                                                   (list "xdg-desktop-portal-wlr" "xdg-desktop-portal" "blueman")))
    (service funmacs-service-type)
 
+  (simple-service 'my-mimeapps
+    home-xdg-mime-applications-service-type
+    (home-xdg-mime-applications-configuration
+      (default `(("x-scheme-handler/http"  . ("librewolf.desktop"))
+                 ("x-scheme-handler/https" . ("librewolf.desktop"))
+                 ("application/pdf"        . ("org.gnome.Evince.desktop"))))))
+
    (service home-bash-service-type
             (home-bash-configuration
              (aliases '(("grep" . "grep --color=auto")
