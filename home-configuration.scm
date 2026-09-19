@@ -119,7 +119,10 @@
 (define sway-patch
   (options->transformation `((with-patch . ,(string-append "sway="
                                                            (current-source-directory)
-                                                           "/patches/sway-busy-cursor.patch")))))
+                                                           "/patches/sway-busy-cursor.patch"))
+                             (with-patch . ,(string-append "wlroots="
+                                                           (current-source-directory)
+                                                           "/patches/wlroots-revert-validate-commit-serial.patch")))))
 
 (define ungoogled-chromium-patch
   (options->transformation `( ;(with-debug-info . "ungoogled-chromium")
