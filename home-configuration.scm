@@ -211,6 +211,7 @@
                  (string-append (current-source-directory)
                                 "/patches/ibus/" name)))
               '( "0001-client-wayland-Drop-Ghostty-preedit-workaround.patch" ; I'm not using Ghostty
+                 "0002-client-wayland-Preserve-depressed-modifiers-on-reset.patch" ; Ctrl+N, new window, Ctrl+V typed "v": modifiers held across the focus change were erased on every activation
                 ; upstreamed "2871.patch"
                 ; is merged "2873.patch" ; Fix modifier sequence handling ; review comments all good.  JUST WAIT UNTIL ITS MERGED
                 ; upstreamed "2874.patch" ; Guard against XKB_MOD_INVALID in modifier mask ; review comment: STILL SLIGHTLY WRONG;     i changed it and updated it.
